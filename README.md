@@ -1,6 +1,10 @@
 # Terraform Provider for DevskinCloud
 
+[![Terraform Registry](https://img.shields.io/badge/terraform-registry-blueviolet)](https://registry.terraform.io/providers/devskin1/devskin-cloud/latest)
+
 A Terraform provider for managing infrastructure on [DevskinCloud](https://cloud.devskin.com).
+
+**Registry:** [registry.terraform.io/providers/devskin1/devskin-cloud](https://registry.terraform.io/providers/devskin1/devskin-cloud/latest)
 
 ## Requirements
 
@@ -20,8 +24,8 @@ go build -o terraform-provider-devskin
 go build -o terraform-provider-devskin
 
 # Install to local Terraform plugin directory
-mkdir -p ~/.terraform.d/plugins/registry.terraform.io/devskin1/devskin-cloud/0.1.0/linux_amd64/
-cp terraform-provider-devskin ~/.terraform.d/plugins/registry.terraform.io/devskin1/devskin-cloud/0.1.0/linux_amd64/
+mkdir -p ~/.terraform.d/plugins/registry.terraform.io/devskin1/devskin-cloud/1.0.0/linux_amd64/
+cp terraform-provider-devskin ~/.terraform.d/plugins/registry.terraform.io/devskin1/devskin-cloud/1.0.0/linux_amd64/
 ```
 
 ## Provider Configuration
@@ -31,7 +35,7 @@ terraform {
   required_providers {
     devskin = {
       source  = "devskin1/devskin-cloud"
-      version = "~> 0.1"
+      version = "~> 1.0"
     }
   }
 }
