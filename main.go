@@ -5,7 +5,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/devskincloud/terraform-provider-devskin/internal/provider"
+	"github.com/devskin1/terraform-provider-devskin-cloud/internal/provider"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 )
 
@@ -18,7 +18,7 @@ func main() {
 	flag.Parse()
 
 	opts := providerserver.ServeOpts{
-		Address: "registry.terraform.io/devskincloud/devskin",
+		Address: "registry.terraform.io/devskin1/devskin-cloud",
 		Debug:   debug,
 	}
 

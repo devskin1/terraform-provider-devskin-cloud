@@ -20,8 +20,8 @@ go build -o terraform-provider-devskin
 go build -o terraform-provider-devskin
 
 # Install to local Terraform plugin directory
-mkdir -p ~/.terraform.d/plugins/registry.terraform.io/devskincloud/devskin/0.1.0/linux_amd64/
-cp terraform-provider-devskin ~/.terraform.d/plugins/registry.terraform.io/devskincloud/devskin/0.1.0/linux_amd64/
+mkdir -p ~/.terraform.d/plugins/registry.terraform.io/devskin1/devskin-cloud/0.1.0/linux_amd64/
+cp terraform-provider-devskin ~/.terraform.d/plugins/registry.terraform.io/devskin1/devskin-cloud/0.1.0/linux_amd64/
 ```
 
 ## Provider Configuration
@@ -30,7 +30,7 @@ cp terraform-provider-devskin ~/.terraform.d/plugins/registry.terraform.io/devsk
 terraform {
   required_providers {
     devskin = {
-      source  = "devskincloud/devskin"
+      source  = "devskin1/devskin-cloud"
       version = "~> 0.1"
     }
   }

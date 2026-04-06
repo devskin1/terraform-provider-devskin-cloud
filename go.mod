@@ -1,4 +1,4 @@
-module github.com/devskincloud/terraform-provider-devskin
+module github.com/devskin1/terraform-provider-devskin-cloud
 
 go 1.21
 

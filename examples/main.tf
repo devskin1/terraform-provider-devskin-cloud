@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     devskin = {
-      source  = "devskincloud/devskin"
+      source  = "devskin1/devskin-cloud"
       version = "~> 0.1"
     }
   }
