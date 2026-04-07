@@ -25,12 +25,18 @@ type ContainerServiceResource struct {
 type ContainerServiceResourceModel struct {
 	ID               types.String `tfsdk:"id"`
 	Name             types.String `tfsdk:"name"`
+	ClusterID        types.String `tfsdk:"cluster_id"`
+	TaskDefinitionID types.String `tfsdk:"task_definition_id"`
 	Image            types.String `tfsdk:"image"`
 	Port             types.Int64  `tfsdk:"port"`
 	DesiredCount     types.Int64  `tfsdk:"desired_count"`
 	SourceRepository types.String `tfsdk:"source_repository"`
+	EndpointMode     types.String `tfsdk:"endpoint_mode"`
+	LoadBalancerID   types.String `tfsdk:"load_balancer_id"`
 	Environment      types.Map    `tfsdk:"environment"`
 	Status           types.String `tfsdk:"status"`
+	PublicIP         types.String `tfsdk:"public_ip"`
+	PublicEndpoint   types.String `tfsdk:"public_endpoint"`
 	URL              types.String `tfsdk:"url"`
 }
 
@@ -55,6 +61,17 @@ func (r *ContainerServiceResource) Schema(_ context.Context, _ resource.SchemaRe
 			},
 			"name": schema.StringAttribute{
 				Description: "The name of the container service.",
+				Required:    true,
+			},
+			"cluster_id": schema.StringAttribute{
+				Description: "The ID of the container cluster to deploy this service in.",
+				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"task_definition_id": schema.StringAttribute{
+				Description: "The ID of the task definition to use.",
 				Required:    true,
 			},
 			"image": schema.StringAttribute{
@@ -82,8 +99,24 @@ func (r *ContainerServiceResource) Schema(_ context.Context, _ resource.SchemaRe
 				Optional:    true,
 				ElementType: types.StringType,
 			},
+			"endpoint_mode": schema.StringAttribute{
+				Description: "Endpoint mode: 'direct' (public IP) or 'loadbalancer' (via LB).",
+				Optional:    true,
+			},
+			"load_balancer_id": schema.StringAttribute{
+				Description: "The ID of the load balancer to attach (when endpoint_mode is 'loadbalancer').",
+				Optional:    true,
+			},
 			"status": schema.StringAttribute{
 				Description: "The current status of the container service.",
+				Computed:    true,
+			},
+			"public_ip": schema.StringAttribute{
+				Description: "The public IP address allocated to this container service.",
+				Computed:    true,
+			},
+			"public_endpoint": schema.StringAttribute{
+				Description: "The public endpoint (ip:port) of the container service.",
 				Computed:    true,
 			},
 			"url": schema.StringAttribute{
@@ -115,16 +148,25 @@ func (r *ContainerServiceResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	body := map[string]interface{}{
-		"name":          plan.Name.ValueString(),
-		"port":          plan.Port.ValueInt64(),
-		"desired_count": plan.DesiredCount.ValueInt64(),
+		"name":         plan.Name.ValueString(),
+		"clusterId":    plan.ClusterID.ValueString(),
+		"port":         plan.Port.ValueInt64(),
+		"desiredCount": plan.DesiredCount.ValueInt64(),
+		"instanceType": "ecs.medium",
 	}
 
+	body["taskDefinitionId"] = plan.TaskDefinitionID.ValueString()
 	if !plan.Image.IsNull() && !plan.Image.IsUnknown() {
 		body["image"] = plan.Image.ValueString()
 	}
 	if !plan.SourceRepository.IsNull() && !plan.SourceRepository.IsUnknown() {
-		body["source_repository"] = plan.SourceRepository.ValueString()
+		body["sourceRepository"] = plan.SourceRepository.ValueString()
+	}
+	if !plan.EndpointMode.IsNull() && !plan.EndpointMode.IsUnknown() {
+		body["endpointMode"] = plan.EndpointMode.ValueString()
+	}
+	if !plan.LoadBalancerID.IsNull() && !plan.LoadBalancerID.IsUnknown() {
+		body["loadBalancerId"] = plan.LoadBalancerID.ValueString()
 	}
 
 	if !plan.Environment.IsNull() && !plan.Environment.IsUnknown() {
@@ -136,7 +178,7 @@ func (r *ContainerServiceResource) Create(ctx context.Context, req resource.Crea
 		body["environment"] = envMap
 	}
 
-	respBody, statusCode, err := r.client.Post("/container-services", body)
+	respBody, statusCode, err := r.client.Post("/containers/services", body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating container service", err.Error())
 		return
@@ -155,6 +197,8 @@ func (r *ContainerServiceResource) Create(ctx context.Context, req resource.Crea
 
 	plan.ID = types.StringValue(getString(result, "id"))
 	plan.Status = types.StringValue(getString(result, "status"))
+	plan.PublicIP = types.StringValue(getString(result, "publicIp"))
+	plan.PublicEndpoint = types.StringValue(getString(result, "publicEndpoint"))
 	plan.URL = types.StringValue(getString(result, "url"))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
@@ -167,7 +211,7 @@ func (r *ContainerServiceResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/container-services/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/containers/services/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading container service", err.Error())
 		return
@@ -189,9 +233,17 @@ func (r *ContainerServiceResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	state.Name = types.StringValue(getString(result, "name"))
+	if v := getString(result, "clusterId"); v != "" {
+		state.ClusterID = types.StringValue(v)
+	}
+	if v := getString(result, "taskDefinitionId"); v != "" {
+		state.TaskDefinitionID = types.StringValue(v)
+	}
 	state.Port = types.Int64Value(getInt64(result, "port"))
-	state.DesiredCount = types.Int64Value(getInt64(result, "desired_count"))
+	state.DesiredCount = types.Int64Value(getInt64(result, "desiredCount"))
 	state.Status = types.StringValue(getString(result, "status"))
+	state.PublicIP = types.StringValue(getString(result, "publicIp"))
+	state.PublicEndpoint = types.StringValue(getString(result, "publicEndpoint"))
 	state.URL = types.StringValue(getString(result, "url"))
 
 	if v := getString(result, "image"); v != "" {
@@ -250,7 +302,7 @@ func (r *ContainerServiceResource) Update(ctx context.Context, req resource.Upda
 		body["environment"] = envMap
 	}
 
-	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/container-services/%s", state.ID.ValueString()), body)
+	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/containers/services/%s", state.ID.ValueString()), body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating container service", err.Error())
 		return
@@ -281,7 +333,7 @@ func (r *ContainerServiceResource) Delete(ctx context.Context, req resource.Dele
 		return
 	}
 
-	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/container-services/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/containers/services/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting container service", err.Error())
 		return

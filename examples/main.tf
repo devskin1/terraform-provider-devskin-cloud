@@ -122,6 +122,7 @@ resource "devskin_k8s_cluster" "main" {
   name    = "${var.environment}-cluster"
   version = var.k8s_version
   region  = var.region
+  vpc_id  = devskin_vpc.main.id
 
   node_groups {
     name          = "system"
@@ -141,10 +142,12 @@ resource "devskin_k8s_cluster" "main" {
 # ---------------------------------------------------------------------------
 
 resource "devskin_container_service" "api" {
-  name          = "${var.environment}-api"
-  image         = "myorg/backend-api:latest"
-  port          = 3000
-  desired_count = 2
+  name               = "${var.environment}-api"
+  cluster_id         = devskin_container_cluster.main.id
+  task_definition_id = devskin_task_definition.api.id
+  image              = "myorg/backend-api:latest"
+  port               = 3000
+  desired_count      = 2
 
   environment = {
     NODE_ENV     = var.environment
@@ -155,12 +158,60 @@ resource "devskin_container_service" "api" {
 
 resource "devskin_container_service" "frontend" {
   name              = "${var.environment}-frontend"
+  cluster_id        = devskin_container_cluster.main.id
   source_repository = "https://github.com/myorg/frontend.git"
   port              = 80
   desired_count     = 2
 
   environment = {
     API_URL = devskin_container_service.api.url
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Container Cluster
+# ---------------------------------------------------------------------------
+
+resource "devskin_container_cluster" "main" {
+  name              = "${var.environment}-ecs-cluster"
+  vpc_id            = devskin_vpc.main.id
+  region            = var.region
+  capacity_provider = "FARGATE"
+}
+
+# ---------------------------------------------------------------------------
+# Task Definitions
+# ---------------------------------------------------------------------------
+
+resource "devskin_task_definition" "api" {
+  family = "${var.environment}-api-task"
+  image  = "myorg/backend-api:latest"
+  cpu    = 512
+  memory = 1024
+
+  port_mappings {
+    container_port = 3000
+    host_port      = 3000
+    protocol       = "tcp"
+  }
+
+  environment = {
+    NODE_ENV     = var.environment
+    DATABASE_URL = "postgres://app:secret@${devskin_database.postgres.endpoint}:${devskin_database.postgres.port}/app"
+  }
+}
+
+resource "devskin_task_definition" "worker" {
+  family            = "${var.environment}-worker-task"
+  image             = "myorg/worker:latest"
+  cpu               = 256
+  memory            = 512
+  source_repository = "https://github.com/myorg/worker.git"
+  source_branch     = "main"
+
+  environment = {
+    NODE_ENV  = var.environment
+    REDIS_URL = "redis://${devskin_database.redis.endpoint}:${devskin_database.redis.port}"
   }
 }
 
@@ -216,6 +267,16 @@ output "api_url" {
 output "frontend_url" {
   description = "URL of the frontend container service"
   value       = devskin_container_service.frontend.url
+}
+
+output "container_cluster_id" {
+  description = "Container cluster ID"
+  value       = devskin_container_cluster.main.id
+}
+
+output "api_task_definition_id" {
+  description = "API task definition ID"
+  value       = devskin_task_definition.api.id
 }
 
 output "instance_count" {

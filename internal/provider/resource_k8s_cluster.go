@@ -33,6 +33,7 @@ type K8sClusterResourceModel struct {
 	Name       types.String `tfsdk:"name"`
 	Version    types.String `tfsdk:"version"`
 	Region     types.String `tfsdk:"region"`
+	VPCID      types.String `tfsdk:"vpc_id"`
 	NodeGroups types.List   `tfsdk:"node_groups"`
 	Status     types.String `tfsdk:"status"`
 	Endpoint   types.String `tfsdk:"endpoint"`
@@ -75,6 +76,13 @@ func (r *K8sClusterResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"region": schema.StringAttribute{
 				Description: "The region where the cluster will be created.",
 				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"vpc_id": schema.StringAttribute{
+				Description: "The VPC ID to place the Kubernetes cluster in.",
+				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -158,7 +166,11 @@ func (r *K8sClusterResource) Create(ctx context.Context, req resource.CreateRequ
 		"node_groups": ngPayload,
 	}
 
-	respBody, statusCode, err := r.client.Post("/k8s/clusters", body)
+	if !plan.VPCID.IsNull() && !plan.VPCID.IsUnknown() {
+		body["vpcId"] = plan.VPCID.ValueString()
+	}
+
+	respBody, statusCode, err := r.client.Post("/kubernetes/clusters", body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating K8s cluster", err.Error())
 		return
@@ -190,7 +202,7 @@ func (r *K8sClusterResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/k8s/clusters/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/kubernetes/clusters/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading K8s cluster", err.Error())
 		return
@@ -217,6 +229,10 @@ func (r *K8sClusterResource) Read(ctx context.Context, req resource.ReadRequest,
 	state.Status = types.StringValue(getString(result, "status"))
 	state.Endpoint = types.StringValue(getString(result, "endpoint"))
 	state.CACert = types.StringValue(getString(result, "ca_cert"))
+
+	if v := getString(result, "vpcId"); v != "" {
+		state.VPCID = types.StringValue(v)
+	}
 
 	// Parse node_groups from API response
 	if rawNGs, ok := result["node_groups"].([]interface{}); ok {
@@ -272,7 +288,7 @@ func (r *K8sClusterResource) Update(ctx context.Context, req resource.UpdateRequ
 		"node_groups": ngPayload,
 	}
 
-	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/k8s/clusters/%s", state.ID.ValueString()), body)
+	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/kubernetes/clusters/%s", state.ID.ValueString()), body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating K8s cluster", err.Error())
 		return
@@ -304,7 +320,7 @@ func (r *K8sClusterResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
-	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/k8s/clusters/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/kubernetes/clusters/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting K8s cluster", err.Error())
 		return

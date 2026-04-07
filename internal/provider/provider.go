@@ -103,6 +103,8 @@ func (p *DevskinProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewDatabaseResource,
 		NewK8sClusterResource,
 		NewContainerServiceResource,
+		NewContainerClusterResource,
+		NewTaskDefinitionResource,
 		NewVPCResource,
 	}
 }

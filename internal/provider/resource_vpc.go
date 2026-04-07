@@ -175,7 +175,7 @@ func (r *VPCResource) Create(ctx context.Context, req resource.CreateRequest, re
 		body["subnets"] = subnetPayload
 	}
 
-	respBody, statusCode, err := r.client.Post("/vpcs", body)
+	respBody, statusCode, err := r.client.Post("/networking/vpcs", body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating VPC", err.Error())
 		return
@@ -206,7 +206,7 @@ func (r *VPCResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/vpcs/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/networking/vpcs/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading VPC", err.Error())
 		return
@@ -297,7 +297,7 @@ func (r *VPCResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		body["subnets"] = subnetPayload
 	}
 
-	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/vpcs/%s", state.ID.ValueString()), body)
+	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/networking/vpcs/%s", state.ID.ValueString()), body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating VPC", err.Error())
 		return
@@ -328,7 +328,7 @@ func (r *VPCResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 		return
 	}
 
-	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/vpcs/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/networking/vpcs/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting VPC", err.Error())
 		return

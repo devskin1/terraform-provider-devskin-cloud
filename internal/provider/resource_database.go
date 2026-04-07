@@ -125,7 +125,7 @@ func (r *DatabaseResource) Create(ctx context.Context, req resource.CreateReques
 		"vpc_id":         plan.VPCID.ValueString(),
 	}
 
-	respBody, statusCode, err := r.client.Post("/databases", body)
+	respBody, statusCode, err := r.client.Post("/database/instances", body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating database", err.Error())
 		return
@@ -157,7 +157,7 @@ func (r *DatabaseResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/databases/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/database/instances/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading database", err.Error())
 		return
@@ -209,7 +209,7 @@ func (r *DatabaseResource) Update(ctx context.Context, req resource.UpdateReques
 		"storage":        plan.Storage.ValueInt64(),
 	}
 
-	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/databases/%s", state.ID.ValueString()), body)
+	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/database/instances/%s", state.ID.ValueString()), body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating database", err.Error())
 		return
@@ -241,7 +241,7 @@ func (r *DatabaseResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/databases/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/database/instances/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting database", err.Error())
 		return

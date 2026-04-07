@@ -126,7 +126,7 @@ func (d *InstancesDataSource) Read(ctx context.Context, req datasource.ReadReque
 		return
 	}
 
-	path := "/instances"
+	path := "/compute/instances"
 	if !config.Region.IsNull() && !config.Region.IsUnknown() {
 		path = fmt.Sprintf("/instances?region=%s", config.Region.ValueString())
 	}

@@ -143,7 +143,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		"ipv6":          plan.IPv6.ValueBool(),
 	}
 
-	respBody, statusCode, err := r.client.Post("/instances", body)
+	respBody, statusCode, err := r.client.Post("/compute/instances", body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating instance", err.Error())
 		return
@@ -175,7 +175,7 @@ func (r *InstanceResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/instances/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/compute/instances/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading instance", err.Error())
 		return
@@ -229,7 +229,7 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		"ipv6":          plan.IPv6.ValueBool(),
 	}
 
-	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/instances/%s", state.ID.ValueString()), body)
+	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/compute/instances/%s", state.ID.ValueString()), body)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating instance", err.Error())
 		return
@@ -261,7 +261,7 @@ func (r *InstanceResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/instances/%s", state.ID.ValueString()))
+	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/compute/instances/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error deleting instance", err.Error())
 		return
