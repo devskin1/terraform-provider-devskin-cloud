@@ -29,15 +29,31 @@ type NodeGroupModel struct {
 }
 
 type K8sClusterResourceModel struct {
-	ID         types.String `tfsdk:"id"`
-	Name       types.String `tfsdk:"name"`
-	Version    types.String `tfsdk:"version"`
-	Region     types.String `tfsdk:"region"`
-	VPCID      types.String `tfsdk:"vpc_id"`
-	NodeGroups types.List   `tfsdk:"node_groups"`
-	Status     types.String `tfsdk:"status"`
-	Endpoint   types.String `tfsdk:"endpoint"`
-	CACert     types.String `tfsdk:"ca_cert"`
+	ID          types.String `tfsdk:"id"`
+	Name        types.String `tfsdk:"name"`
+	Version     types.String `tfsdk:"version"`
+	Region      types.String `tfsdk:"region"`
+	VPCID       types.String `tfsdk:"vpc_id"`
+	NodeGroups  types.List   `tfsdk:"node_groups"`
+	MaxPods     types.Int64  `tfsdk:"max_pods"`
+	CNI         types.String `tfsdk:"cni"`
+	Addons      types.Object `tfsdk:"addons"`
+	Status      types.String `tfsdk:"status"`
+	Endpoint    types.String `tfsdk:"endpoint"`
+	CACert      types.String `tfsdk:"ca_cert"`
+	OIDCIssuer  types.String `tfsdk:"oidc_issuer"`
+}
+
+var addonsAttrTypes = map[string]attr.Type{
+	"metrics_server":     types.BoolType,
+	"ingress_nginx":      types.BoolType,
+	"cert_manager":       types.BoolType,
+	"kyverno":            types.BoolType,
+	"cilium":             types.BoolType,
+	"local_path_storage": types.BoolType,
+	"velero":             types.BoolType,
+	"irsa":               types.BoolType,
+	"longhorn":           types.BoolType,
 }
 
 var nodeGroupAttrTypes = map[string]attr.Type{
@@ -107,6 +123,32 @@ func (r *K8sClusterResource) Schema(_ context.Context, _ resource.SchemaRequest,
 					},
 				},
 			},
+			"max_pods": schema.Int64Attribute{
+				Description: "Max pods per kubelet node. Default 110, range 10-1000.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"cni": schema.StringAttribute{
+				Description: "CNI plugin: \"calico\" (default) or \"flannel\". Cilium addon overrides this.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"addons": schema.SingleNestedAttribute{
+				Description: "Optional cluster add-ons installed automatically after master init.",
+				Optional:    true,
+				Computed:    true,
+				Attributes: map[string]schema.Attribute{
+					"metrics_server":     schema.BoolAttribute{Optional: true, Computed: true, Description: "Enable metrics-server (kubectl top, HPA). Default true."},
+					"ingress_nginx":      schema.BoolAttribute{Optional: true, Computed: true, Description: "Install ingress-nginx controller. Default false."},
+					"cert_manager":       schema.BoolAttribute{Optional: true, Computed: true, Description: "Install cert-manager (TLS automation). Default false."},
+					"kyverno":            schema.BoolAttribute{Optional: true, Computed: true, Description: "Install Kyverno policy engine. Default false."},
+					"cilium":             schema.BoolAttribute{Optional: true, Computed: true, Description: "Use Cilium CNI (overrides calico/flannel). Default false."},
+					"local_path_storage": schema.BoolAttribute{Optional: true, Computed: true, Description: "Install local-path-provisioner (default StorageClass)."},
+					"velero":             schema.BoolAttribute{Optional: true, Computed: true, Description: "Install Velero CLI + namespace for backup/restore."},
+					"irsa":               schema.BoolAttribute{Optional: true, Computed: true, Description: "Configure cluster as OIDC issuer for IAM Roles for Service Accounts. Default true."},
+					"longhorn":           schema.BoolAttribute{Optional: true, Computed: true, Description: "Install Longhorn distributed block storage (default StorageClass when on)."},
+				},
+			},
 			"status": schema.StringAttribute{
 				Description: "The current status of the cluster.",
 				Computed:    true,
@@ -119,6 +161,10 @@ func (r *K8sClusterResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Description: "The base64-encoded CA certificate for the cluster.",
 				Computed:    true,
 				Sensitive:   true,
+			},
+			"oidc_issuer": schema.StringAttribute{
+				Description: "OIDC issuer URL for IRSA. Configure projected ServiceAccount tokens with audience=sts.kubmix.cloud against this issuer.",
+				Computed:    true,
 			},
 		},
 	}
@@ -169,6 +215,38 @@ func (r *K8sClusterResource) Create(ctx context.Context, req resource.CreateRequ
 	if !plan.VPCID.IsNull() && !plan.VPCID.IsUnknown() {
 		body["vpcId"] = plan.VPCID.ValueString()
 	}
+	if !plan.MaxPods.IsNull() && !plan.MaxPods.IsUnknown() {
+		body["maxPods"] = plan.MaxPods.ValueInt64()
+	}
+	if !plan.CNI.IsNull() && !plan.CNI.IsUnknown() {
+		body["cni"] = plan.CNI.ValueString()
+	}
+	if !plan.Addons.IsNull() && !plan.Addons.IsUnknown() {
+		// Map TF snake_case attrs → backend camelCase fields
+		addonsMap := plan.Addons.Attributes()
+		bodyAddons := map[string]interface{}{}
+		mapping := map[string]string{
+			"metrics_server":     "metricsServer",
+			"ingress_nginx":      "ingressNginx",
+			"cert_manager":       "certManager",
+			"kyverno":            "kyverno",
+			"cilium":             "cilium",
+			"local_path_storage": "localPathStorage",
+			"velero":             "velero",
+			"irsa":               "irsa",
+			"longhorn":           "longhorn",
+		}
+		for tfKey, apiKey := range mapping {
+			if v, ok := addonsMap[tfKey]; ok && !v.IsNull() && !v.IsUnknown() {
+				if b, ok := v.(types.Bool); ok {
+					bodyAddons[apiKey] = b.ValueBool()
+				}
+			}
+		}
+		if len(bodyAddons) > 0 {
+			body["addons"] = bodyAddons
+		}
+	}
 
 	respBody, statusCode, err := r.client.Post("/kubernetes/clusters", body)
 	if err != nil {
@@ -191,6 +269,29 @@ func (r *K8sClusterResource) Create(ctx context.Context, req resource.CreateRequ
 	plan.Status = types.StringValue(getString(result, "status"))
 	plan.Endpoint = types.StringValue(getString(result, "endpoint"))
 	plan.CACert = types.StringValue(getString(result, "ca_cert"))
+	// Synthesize the OIDC issuer from the cluster ID (always known after create).
+	plan.OIDCIssuer = types.StringValue(fmt.Sprintf("https://cloud-api.kubmix.com/api/oidc/cluster/%s", plan.ID.ValueString()))
+	// Echo back the values we sent (so plan/state line up after first apply).
+	if plan.MaxPods.IsNull() || plan.MaxPods.IsUnknown() {
+		plan.MaxPods = types.Int64Value(110)
+	}
+	if plan.CNI.IsNull() || plan.CNI.IsUnknown() {
+		plan.CNI = types.StringValue("calico")
+	}
+	if plan.Addons.IsNull() || plan.Addons.IsUnknown() {
+		emptyAddons, _ := types.ObjectValue(addonsAttrTypes, map[string]attr.Value{
+			"metrics_server":     types.BoolValue(true),
+			"ingress_nginx":      types.BoolValue(false),
+			"cert_manager":       types.BoolValue(false),
+			"kyverno":            types.BoolValue(false),
+			"cilium":             types.BoolValue(false),
+			"local_path_storage": types.BoolValue(true),
+			"velero":             types.BoolValue(false),
+			"irsa":               types.BoolValue(true),
+			"longhorn":           types.BoolValue(false),
+		})
+		plan.Addons = emptyAddons
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -229,6 +330,7 @@ func (r *K8sClusterResource) Read(ctx context.Context, req resource.ReadRequest,
 	state.Status = types.StringValue(getString(result, "status"))
 	state.Endpoint = types.StringValue(getString(result, "endpoint"))
 	state.CACert = types.StringValue(getString(result, "ca_cert"))
+	state.OIDCIssuer = types.StringValue(fmt.Sprintf("https://cloud-api.kubmix.com/api/oidc/cluster/%s", state.ID.ValueString()))
 
 	if v := getString(result, "vpcId"); v != "" {
 		state.VPCID = types.StringValue(v)

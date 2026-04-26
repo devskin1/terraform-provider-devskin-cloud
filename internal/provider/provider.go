@@ -106,6 +106,9 @@ func (p *DevskinProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewContainerClusterResource,
 		NewTaskDefinitionResource,
 		NewVPCResource,
+		NewFlexServiceResource,
+		NewElasticIPResource,
+		NewIAMRoleResource,
 	}
 }
 
@@ -162,6 +165,10 @@ func (c *ApiClient) Post(path string, body interface{}) ([]byte, int, error) {
 
 func (c *ApiClient) Put(path string, body interface{}) ([]byte, int, error) {
 	return c.doRequest(http.MethodPut, path, body)
+}
+
+func (c *ApiClient) Patch(path string, body interface{}) ([]byte, int, error) {
+	return c.doRequest(http.MethodPatch, path, body)
 }
 
 func (c *ApiClient) Delete(path string) ([]byte, int, error) {
