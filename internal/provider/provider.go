@@ -188,3 +188,14 @@ func (c *ApiClient) Patch(path string, body interface{}) ([]byte, int, error) {
 func (c *ApiClient) Delete(path string) ([]byte, int, error) {
 	return c.doRequest(http.MethodDelete, path, nil)
 }
+
+// Do is a generic dispatcher for callers that hold the verb as a string
+// (e.g. resources whose CRUD path picks the verb dynamically). Strips a
+// leading /api/ from the path so callers that prepend the prefix manually
+// don't collide with the BaseURL that already ends in /api.
+func (c *ApiClient) Do(method, path string, body interface{}) ([]byte, int, error) {
+	if len(path) >= 5 && path[:5] == "/api/" {
+		path = path[4:]
+	}
+	return c.doRequest(method, path, body)
+}
