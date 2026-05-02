@@ -38,6 +38,7 @@ type ContainerServiceResourceModel struct {
 	PublicIP         types.String `tfsdk:"public_ip"`
 	PublicEndpoint   types.String `tfsdk:"public_endpoint"`
 	URL              types.String `tfsdk:"url"`
+	Monitoring       types.Object `tfsdk:"monitoring"`
 }
 
 func NewContainerServiceResource() resource.Resource {
@@ -123,6 +124,21 @@ func (r *ContainerServiceResource) Schema(_ context.Context, _ resource.SchemaRe
 				Description: "The public URL of the deployed container service.",
 				Computed:    true,
 			},
+			"monitoring": schema.SingleNestedAttribute{
+				Description: "Optional Flux observability enrollment. Only consumed at create time — modifying this block on an existing service is a no-op.",
+				Optional:    true,
+				Attributes: map[string]schema.Attribute{
+					"enabled": schema.BoolAttribute{
+						Description: "Enroll the service into Flux observability.",
+						Required:    true,
+					},
+					"api_key": schema.StringAttribute{
+						Description: "Flux project API key. Required when enabled is true.",
+						Optional:    true,
+						Sensitive:   true,
+					},
+				},
+			},
 		},
 	}
 }
@@ -176,6 +192,24 @@ func (r *ContainerServiceResource) Create(ctx context.Context, req resource.Crea
 			return
 		}
 		body["environment"] = envMap
+	}
+
+	// Optional Flux enrollment — container.controller.ts accepts a structured
+	// `monitoring: { enabled, apiKey }` payload and provisions the agent at
+	// service-create time. Modifying this block later is a no-op.
+	if !plan.Monitoring.IsNull() && !plan.Monitoring.IsUnknown() {
+		attrs := plan.Monitoring.Attributes()
+		enabled := false
+		if v, ok := attrs["enabled"].(types.Bool); ok {
+			enabled = v.ValueBool()
+		}
+		if enabled {
+			monitoring := map[string]interface{}{"enabled": true}
+			if v, ok := attrs["api_key"].(types.String); ok && !v.IsNull() && !v.IsUnknown() {
+				monitoring["apiKey"] = v.ValueString()
+			}
+			body["monitoring"] = monitoring
+		}
 	}
 
 	respBody, statusCode, err := r.client.Post("/containers/services", body)

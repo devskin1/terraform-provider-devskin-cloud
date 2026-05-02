@@ -41,6 +41,13 @@ variable "db_storage_gb" {
   description = "Database storage in GB"
 }
 
+variable "flux_api_key" {
+  type        = string
+  sensitive   = true
+  default     = ""
+  description = "Flux observability API key (from admin-flux.devskin.com). Optional — leave empty to skip auto-enrollment."
+}
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -92,6 +99,69 @@ resource "devskin_instance" "bastion" {
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
   ipv6          = false
+
+  # Optional Flux observability — only consumed at create time. Comment
+  # out (or omit `monitoring_enrollment`) to skip auto-enrollment.
+  # monitoring_enrollment {
+  #   enabled = true
+  #   api_key = var.flux_api_key
+  # }
+}
+
+# ---------------------------------------------------------------------------
+# Data-Platform VMs (replace deprecated managed Lakehouse paths)
+# ---------------------------------------------------------------------------
+
+# JupyterLab — replaces managed Lakehouse Notebooks (mp-030, tpl-206).
+resource "devskin_instance" "jupyter" {
+  name          = "${var.environment}-jupyter"
+  instance_type = "ds.medium"
+  image_id      = "tpl-206"
+  region        = var.region
+  vpc_id        = devskin_vpc.main.id
+  subnet_id     = devskin_vpc.main.default_subnet_id
+}
+
+# Apache Kafka — replaces deprecated devskin_lake_kafka_cluster (mp-040, tpl-204).
+resource "devskin_instance" "kafka" {
+  name          = "${var.environment}-kafka"
+  instance_type = "ds.medium"
+  image_id      = "tpl-204"
+  region        = var.region
+  vpc_id        = devskin_vpc.main.id
+  subnet_id     = devskin_vpc.main.default_subnet_id
+}
+
+# Apache Airflow — replaces deprecated devskin_lake_airflow_dag (mp-050, tpl-205).
+resource "devskin_instance" "airflow" {
+  name          = "${var.environment}-airflow"
+  instance_type = "ds.medium"
+  image_id      = "tpl-205"
+  region        = var.region
+  vpc_id        = devskin_vpc.main.id
+  subnet_id     = devskin_vpc.main.default_subnet_id
+}
+
+# ---------------------------------------------------------------------------
+# Lakehouse — managed catalog (Iceberg + Polaris + Trino)
+# ---------------------------------------------------------------------------
+
+resource "devskin_lake_database" "bronze" {
+  name        = "${var.environment}_bronze"
+  description = "Raw landing zone — events, click-stream, replays."
+}
+
+resource "devskin_lake_table" "orders" {
+  database_id = devskin_lake_database.bronze.id
+  name        = "orders"
+
+  columns = [
+    { name = "id",         type = "bigint" },
+    { name = "amount",     type = "double" },
+    { name = "currency",   type = "varchar" },
+    { name = "created_at", type = "timestamp" },
+    { name = "user_id",    type = "varchar" },
+  ]
 }
 
 # ---------------------------------------------------------------------------
@@ -154,6 +224,12 @@ resource "devskin_container_service" "api" {
     DATABASE_URL = "postgres://app:secret@${devskin_database.postgres.endpoint}:${devskin_database.postgres.port}/app"
     REDIS_URL    = "redis://${devskin_database.redis.endpoint}:${devskin_database.redis.port}"
   }
+
+  # Optional Flux observability — only consumed at create time.
+  # monitoring {
+  #   enabled = true
+  #   api_key = var.flux_api_key
+  # }
 }
 
 resource "devskin_container_service" "frontend" {

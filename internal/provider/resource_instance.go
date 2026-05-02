@@ -23,17 +23,18 @@ type InstanceResource struct {
 }
 
 type InstanceResourceModel struct {
-	ID           types.String `tfsdk:"id"`
-	Name         types.String `tfsdk:"name"`
-	InstanceType types.String `tfsdk:"instance_type"`
-	ImageID      types.String `tfsdk:"image_id"`
-	Region       types.String `tfsdk:"region"`
-	VPCID        types.String `tfsdk:"vpc_id"`
-	SubnetID     types.String `tfsdk:"subnet_id"`
-	IPv6         types.Bool   `tfsdk:"ipv6"`
-	Status       types.String `tfsdk:"status"`
-	PublicIP     types.String `tfsdk:"public_ip"`
-	PrivateIP    types.String `tfsdk:"private_ip"`
+	ID                   types.String `tfsdk:"id"`
+	Name                 types.String `tfsdk:"name"`
+	InstanceType         types.String `tfsdk:"instance_type"`
+	ImageID              types.String `tfsdk:"image_id"`
+	Region               types.String `tfsdk:"region"`
+	VPCID                types.String `tfsdk:"vpc_id"`
+	SubnetID             types.String `tfsdk:"subnet_id"`
+	IPv6                 types.Bool   `tfsdk:"ipv6"`
+	Status               types.String `tfsdk:"status"`
+	PublicIP             types.String `tfsdk:"public_ip"`
+	PrivateIP            types.String `tfsdk:"private_ip"`
+	MonitoringEnrollment types.Object `tfsdk:"monitoring_enrollment"`
 }
 
 func NewInstanceResource() resource.Resource {
@@ -109,6 +110,21 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "The private IP address assigned to the instance.",
 				Computed:    true,
 			},
+			"monitoring_enrollment": schema.SingleNestedAttribute{
+				Description: "Optional Flux observability enrollment. Only consumed at create time — modifying this block on an existing instance is a no-op.",
+				Optional:    true,
+				Attributes: map[string]schema.Attribute{
+					"enabled": schema.BoolAttribute{
+						Description: "Enroll the VM into Flux observability at boot.",
+						Required:    true,
+					},
+					"api_key": schema.StringAttribute{
+						Description: "Flux project API key. Required when enabled is true.",
+						Optional:    true,
+						Sensitive:   true,
+					},
+				},
+			},
 		},
 	}
 }
@@ -141,6 +157,25 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		"vpc_id":        plan.VPCID.ValueString(),
 		"subnet_id":     plan.SubnetID.ValueString(),
 		"ipv6":          plan.IPv6.ValueBool(),
+	}
+
+	// Optional Flux enrollment — only consumed at create time. Boolean
+	// `monitoring: true` flips the legacy flag the backend already understood;
+	// the structured `monitoringEnrollment` carries the api key.
+	if !plan.MonitoringEnrollment.IsNull() && !plan.MonitoringEnrollment.IsUnknown() {
+		attrs := plan.MonitoringEnrollment.Attributes()
+		enabled := false
+		if v, ok := attrs["enabled"].(types.Bool); ok {
+			enabled = v.ValueBool()
+		}
+		if enabled {
+			body["monitoring"] = true
+			enrollment := map[string]interface{}{"enabled": true}
+			if v, ok := attrs["api_key"].(types.String); ok && !v.IsNull() && !v.IsUnknown() {
+				enrollment["apiKey"] = v.ValueString()
+			}
+			body["monitoringEnrollment"] = enrollment
+		}
 	}
 
 	respBody, statusCode, err := r.client.Post("/compute/instances", body)

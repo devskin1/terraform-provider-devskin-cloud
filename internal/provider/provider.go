@@ -109,12 +109,26 @@ func (p *DevskinProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewFlexServiceResource,
 		NewElasticIPResource,
 		NewIAMRoleResource,
+		NewAIKnowledgeBaseResource,
+		NewLakeDatabaseResource,
+		NewLakeSparkJobResource,
+		NewLakeKafkaClusterResource,
+		NewLakeKafkaTopicResource,
+		NewLakeAirflowDagResource,
+		NewLakeQualityRuleResource,
+		NewLakeMaterializedViewResource,
+		NewLakeSavedQueryResource,
+		NewLakeTableGovernanceResource,
+		NewLakeTableResource,
 	}
 }
 
 func (p *DevskinProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewInstancesDataSource,
+		NewOptimizationRecommendationsDataSource,
+		NewOptimizationSavingsDataSource,
+		NewNamespaceCostsDataSource,
 	}
 }
 
