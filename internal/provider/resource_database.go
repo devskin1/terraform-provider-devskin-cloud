@@ -393,4 +393,21 @@ func (r *DatabaseResource) Delete(ctx context.Context, req resource.DeleteReques
 	}
 }
 
-// (getBool already exported by resource_instance.go in this package)
+// getInt64 lives here (not in resource_instance.go where getString /
+// getBool are) because multiple resources need it. Handles the three
+// JSON shapes that `encoding/json` may pick: float64 (default), int64
+// (when UseNumber is off), and json.Number (when UseNumber is on).
+func getInt64(m map[string]interface{}, key string) int64 {
+	if v, ok := m[key]; ok && v != nil {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		case json.Number:
+			i, _ := n.Int64()
+			return i
+		}
+	}
+	return 0
+}
