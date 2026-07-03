@@ -1,7 +1,7 @@
 package provider
 
 // DEPRECATED — managed Kafka clusters were retired. Apache Kafka now ships as
-// a marketplace VM (mp-040, tpl-204). The schema is preserved so existing
+// a marketplace VM (mp-040, tpl-9201). The schema is preserved so existing
 // state files still parse; CRUD is short-circuited with a clear error.
 
 import (
@@ -27,7 +27,7 @@ const lakeKafkaDeprecationMsg = "Apache Kafka is now deployed as a marketplace V
 
 const lakeKafkaMigrationDetail = "The /api/lakehouse/streaming/clusters* endpoints were retired. To migrate:\n" +
 	"  1. terraform state rm devskin_lake_kafka_cluster.<name>\n" +
-	"  2. Create a devskin_instance with image_id = \"tpl-204\" (or hit POST /api/marketplace/products/mp-040/deploy)\n" +
+	"  2. Create a devskin_instance with image_id = \"tpl-9201\" (or hit POST /api/marketplace/products/mp-040/deploy)\n" +
 	"  3. Connect with bootstrap-server <vm-public-ip>:9092"
 
 type LakeKafkaClusterResource struct {

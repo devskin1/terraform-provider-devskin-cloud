@@ -99,7 +99,7 @@ Manages a compute instance.
 resource "devskin_instance" "web" {
   name          = "web-server"
   instance_type = "ds.medium"
-  image_id      = "ubuntu-22.04"
+  image_id      = "tpl-9100"
   region        = "us-east-1"
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
@@ -125,7 +125,7 @@ template image id directly (or `POST /api/marketplace/products/:id/deploy`):
 resource "devskin_instance" "jupyter" {
   name          = "data-team-jupyter"
   instance_type = "ds.medium"
-  image_id      = "tpl-206"        # JupyterLab — mp-030
+  image_id      = "tpl-9203"       # JupyterLab — mp-030
   region        = "us-east-1"
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
@@ -135,7 +135,7 @@ resource "devskin_instance" "jupyter" {
 resource "devskin_instance" "kafka" {
   name          = "events-kafka"
   instance_type = "ds.medium"
-  image_id      = "tpl-204"        # Apache Kafka — mp-040
+  image_id      = "tpl-9201"       # Apache Kafka — mp-040
   region        = "us-east-1"
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
@@ -145,7 +145,7 @@ resource "devskin_instance" "kafka" {
 resource "devskin_instance" "airflow" {
   name          = "etl-airflow"
   instance_type = "ds.medium"
-  image_id      = "tpl-205"        # Apache Airflow — mp-050
+  image_id      = "tpl-9202"       # Apache Airflow — mp-050
   region        = "us-east-1"
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
@@ -284,9 +284,9 @@ an error pointing to the marketplace flow:
 
 | Resource | Replacement |
 |----------|-------------|
-| `devskin_lake_kafka_cluster` | `devskin_instance` with `image_id = "tpl-204"` |
+| `devskin_lake_kafka_cluster` | `devskin_instance` with `image_id = "tpl-9201"` |
 | `devskin_lake_kafka_topic` | Run `kafka-topics.sh` against the Kafka VM |
-| `devskin_lake_airflow_dag` | `devskin_instance` with `image_id = "tpl-205"`, drop DAG files at `/opt/airflow/dags/` via SSH |
+| `devskin_lake_airflow_dag` | `devskin_instance` with `image_id = "tpl-9202"`, drop DAG files at `/opt/airflow/dags/` via SSH |
 
 To migrate: `terraform state rm <resource>.<name>` followed by adding a
 `devskin_instance` with the matching `image_id`.
@@ -351,7 +351,7 @@ resource "devskin_vpc" "main" {
 resource "devskin_instance" "web" {
   name          = "${var.environment}-web"
   instance_type = "ds.medium"
-  image_id      = "ubuntu-22.04"
+  image_id      = "tpl-9100"
   region        = var.region
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id

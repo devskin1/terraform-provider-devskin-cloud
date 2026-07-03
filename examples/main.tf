@@ -94,7 +94,7 @@ resource "devskin_vpc" "main" {
 resource "devskin_instance" "bastion" {
   name          = "${var.environment}-bastion"
   instance_type = "ds.small"
-  image_id      = "ubuntu-22.04"
+  image_id      = "tpl-9100"
   region        = var.region
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
@@ -112,31 +112,31 @@ resource "devskin_instance" "bastion" {
 # Data-Platform VMs (replace deprecated managed Lakehouse paths)
 # ---------------------------------------------------------------------------
 
-# JupyterLab — replaces managed Lakehouse Notebooks (mp-030, tpl-206).
+# JupyterLab — replaces managed Lakehouse Notebooks (mp-030, tpl-9203).
 resource "devskin_instance" "jupyter" {
   name          = "${var.environment}-jupyter"
   instance_type = "ds.medium"
-  image_id      = "tpl-206"
+  image_id      = "tpl-9203"
   region        = var.region
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
 }
 
-# Apache Kafka — replaces deprecated devskin_lake_kafka_cluster (mp-040, tpl-204).
+# Apache Kafka — replaces deprecated devskin_lake_kafka_cluster (mp-040, tpl-9201).
 resource "devskin_instance" "kafka" {
   name          = "${var.environment}-kafka"
   instance_type = "ds.medium"
-  image_id      = "tpl-204"
+  image_id      = "tpl-9201"
   region        = var.region
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
 }
 
-# Apache Airflow — replaces deprecated devskin_lake_airflow_dag (mp-050, tpl-205).
+# Apache Airflow — replaces deprecated devskin_lake_airflow_dag (mp-050, tpl-9202).
 resource "devskin_instance" "airflow" {
   name          = "${var.environment}-airflow"
   instance_type = "ds.medium"
-  image_id      = "tpl-205"
+  image_id      = "tpl-9202"
   region        = var.region
   vpc_id        = devskin_vpc.main.id
   subnet_id     = devskin_vpc.main.default_subnet_id
