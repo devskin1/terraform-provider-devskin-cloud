@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	_ resource.Resource                = &InstanceResource{}
+	_ resource.Resource              = &InstanceResource{}
 	_ resource.ResourceWithConfigure   = &InstanceResource{}
 	_ resource.ResourceWithImportState = &InstanceResource{}
 )
@@ -42,6 +42,7 @@ type InstanceResourceModel struct {
 	VolumeSize           types.Int64  `tfsdk:"volume_size"`
 	VolumeType           types.String `tfsdk:"volume_type"`
 	AssignPublicIP       types.Bool   `tfsdk:"assign_public_ip"`
+	UserData             types.String `tfsdk:"user_data"`
 	Tags                 types.Map    `tfsdk:"tags"`
 	Status               types.String `tfsdk:"status"`
 	PublicIP             types.String `tfsdk:"public_ip"`
@@ -111,9 +112,9 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Default:     booldefault.StaticBool(false),
 			},
 			"security_group_ids": schema.ListAttribute{
-				Description:   "Security groups to attach. Omit to use the VPC default.",
-				Optional:      true,
-				ElementType:   types.StringType,
+				Description: "Security groups to attach. Omit to use the VPC default.",
+				Optional:    true,
+				ElementType: types.StringType,
 				PlanModifiers: []planmodifier.List{},
 			},
 			"key_pair_id": schema.StringAttribute{
@@ -139,6 +140,13 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Description: "Key/value tags applied to the instance.",
 				Optional:    true,
 				ElementType: types.StringType,
+			},
+			"user_data": schema.StringAttribute{
+				Description: "Script run once on first boot, as root (equivalent to AWS user_data). Linux only. Output goes to /var/log/kubmix-user-data.log on the VM. Changing it forces a new instance, since it only runs at creation.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"status": schema.StringAttribute{
 				Description: "The current status of the instance.",
@@ -215,6 +223,9 @@ func (r *InstanceResource) buildCreateBody(ctx context.Context, plan InstanceRes
 	}
 	if !plan.AssignPublicIP.IsNull() && !plan.AssignPublicIP.IsUnknown() {
 		body["publicIp"] = plan.AssignPublicIP.ValueBool()
+	}
+	if !plan.UserData.IsNull() && !plan.UserData.IsUnknown() {
+		body["userData"] = plan.UserData.ValueString()
 	}
 	if !plan.Tags.IsNull() && !plan.Tags.IsUnknown() {
 		var tags map[string]string
