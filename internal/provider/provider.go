@@ -43,7 +43,7 @@ func New(version string) func() provider.Provider {
 }
 
 func (p *DevskinProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "devskin"
+	resp.TypeName = "kubmix"
 	resp.Version = p.version
 }
 
@@ -106,6 +106,7 @@ func (p *DevskinProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewContainerClusterResource,
 		NewTaskDefinitionResource,
 		NewVPCResource,
+		NewSecurityGroupResource,
 		NewFlexServiceResource,
 		NewElasticIPResource,
 		NewIAMRoleResource,

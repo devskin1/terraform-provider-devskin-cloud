@@ -6,17 +6,20 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 var (
-	_ resource.Resource              = &VPCResource{}
-	_ resource.ResourceWithConfigure = &VPCResource{}
+	_ resource.Resource                = &VPCResource{}
+	_ resource.ResourceWithConfigure   = &VPCResource{}
+	_ resource.ResourceWithImportState = &VPCResource{}
 )
 
 type VPCResource struct {
@@ -36,12 +39,14 @@ type VPCResourceModel struct {
 }
 
 type SubnetModel struct {
+	ID        types.String `tfsdk:"id"`
 	Name      types.String `tfsdk:"name"`
 	CIDRBlock types.String `tfsdk:"cidr_block"`
 	Zone      types.String `tfsdk:"zone"`
 }
 
 var subnetAttrTypes = map[string]attr.Type{
+	"id":         types.StringType,
 	"name":       types.StringType,
 	"cidr_block": types.StringType,
 	"zone":       types.StringType,
@@ -69,12 +74,20 @@ func (r *VPCResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 			"name": schema.StringAttribute{
 				Description: "The name of the VPC.",
 				Required:    true,
-			},
-			"cidr_block": schema.StringAttribute{
-				Description: "The CIDR block for the VPC (e.g. 10.0.0.0/16).",
-				Required:    true,
+				// The API has no PUT/PATCH for VPCs (only GET/POST/DELETE), so
+				// any change has to go through a replace instead of an update
+				// that would 404 with "Route not found".
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"cidr_block": schema.StringAttribute{
+				Description: "CIDR da VPC (ex: 10.0.190.0/24). Omitido, o backend aloca o proximo /24 livre — recomendado, evita colidir com VPC de outro tenant.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"region": schema.StringAttribute{
@@ -89,31 +102,17 @@ func (r *VPCResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
 			},
 			"enable_ipv6": schema.BoolAttribute{
 				Description: "Whether to enable IPv6 in the VPC.",
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
-			},
-			"subnets": schema.ListNestedAttribute{
-				Description: "Subnets to create within the VPC.",
-				Optional:    true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Description: "The name of the subnet.",
-							Required:    true,
-						},
-						"cidr_block": schema.StringAttribute{
-							Description: "The CIDR block for the subnet.",
-							Required:    true,
-						},
-						"zone": schema.StringAttribute{
-							Description: "The availability zone for the subnet.",
-							Optional:    true,
-						},
-					},
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
 				},
 			},
 			"status": schema.StringAttribute{
@@ -123,6 +122,35 @@ func (r *VPCResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 			"default_subnet_id": schema.StringAttribute{
 				Description: "The ID of the default subnet in the VPC.",
 				Computed:    true,
+			},
+		},
+		// Repeated `subnets { ... }` blocks — the form the docs and examples
+		// always used. As a ListNestedAttribute it required `subnets = [{...}]`,
+		// so every example in the repo failed with "Blocks of type subnets are
+		// not expected here".
+		Blocks: map[string]schema.Block{
+			"subnets": schema.ListNestedBlock{
+				Description: "Extra subnets to create within the VPC. One default subnet is always created.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Description: "The ID of the created subnet — use it as subnet_id on an instance.",
+							Computed:    true,
+						},
+						"name": schema.StringAttribute{
+							Description: "The name of the subnet.",
+							Required:    true,
+						},
+						"cidr_block": schema.StringAttribute{
+							Description: "The CIDR block for the subnet, inside the VPC CIDR.",
+							Required:    true,
+						},
+						"zone": schema.StringAttribute{
+							Description: "The availability zone for the subnet.",
+							Optional:    true,
+						},
+					},
+				},
 			},
 		},
 	}
@@ -148,31 +176,18 @@ func (r *VPCResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	// createVpcSchema uses camelCase and splits DNS into two flags.
 	body := map[string]interface{}{
-		"name":        plan.Name.ValueString(),
-		"cidr_block":  plan.CIDRBlock.ValueString(),
-		"region":      plan.Region.ValueString(),
-		"enable_dns":  plan.EnableDNS.ValueBool(),
-		"enable_ipv6": plan.EnableIPv6.ValueBool(),
+		"name":               plan.Name.ValueString(),
+		"region":             plan.Region.ValueString(),
+		"enableIpv6":         plan.EnableIPv6.ValueBool(),
+		"enableDnsSupport":   plan.EnableDNS.ValueBool(),
+		"enableDnsHostnames": plan.EnableDNS.ValueBool(),
 	}
-
-	if !plan.Subnets.IsNull() && !plan.Subnets.IsUnknown() {
-		var subnets []SubnetModel
-		resp.Diagnostics.Append(plan.Subnets.ElementsAs(ctx, &subnets, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		subnetPayload := make([]map[string]interface{}, len(subnets))
-		for i, s := range subnets {
-			subnetPayload[i] = map[string]interface{}{
-				"name":       s.Name.ValueString(),
-				"cidr_block": s.CIDRBlock.ValueString(),
-			}
-			if !s.Zone.IsNull() && !s.Zone.IsUnknown() {
-				subnetPayload[i]["zone"] = s.Zone.ValueString()
-			}
-		}
-		body["subnets"] = subnetPayload
+	// cidrBlock is optional upstream: omitted, the backend allocates the next
+	// free /24. Sending an empty string would fail the regex.
+	if !plan.CIDRBlock.IsNull() && !plan.CIDRBlock.IsUnknown() && plan.CIDRBlock.ValueString() != "" {
+		body["cidrBlock"] = plan.CIDRBlock.ValueString()
 	}
 
 	respBody, statusCode, err := r.client.Post("/networking/vpcs", body)
@@ -191,10 +206,82 @@ func (r *VPCResource) Create(ctx context.Context, req resource.CreateRequest, re
 		resp.Diagnostics.AddError("Error parsing response", err.Error())
 		return
 	}
+	data := unwrapData(result)
 
-	plan.ID = types.StringValue(getString(result, "id"))
-	plan.Status = types.StringValue(getString(result, "status"))
-	plan.DefaultSubnetID = types.StringValue(getString(result, "default_subnet_id"))
+	plan.ID = types.StringValue(getString(data, "id"))
+	plan.Status = types.StringValue(getString(data, "status"))
+	if plan.CIDRBlock.IsNull() || plan.CIDRBlock.IsUnknown() {
+		plan.CIDRBlock = types.StringValue(getString(data, "cidrBlock"))
+	}
+
+	// There is no `defaultSubnetId` field: the response carries a `subnets`
+	// array, and at this point it holds exactly the one subnet the backend
+	// auto-creates. Reading the non-existent field left subnet_id empty and
+	// every instance failed with SUBNET_VPC_MISMATCH.
+	plan.DefaultSubnetID = types.StringNull()
+	if raw, ok := data["subnets"].([]interface{}); ok && len(raw) > 0 {
+		if first, ok := raw[0].(map[string]interface{}); ok {
+			plan.DefaultSubnetID = types.StringValue(getString(first, "id"))
+		}
+	}
+
+	// The VPC create endpoint ignores a subnet list and always provisions one
+	// default subnet. Extra subnets have to be POSTed one by one, otherwise the
+	// `subnets` block silently does nothing.
+	if !plan.Subnets.IsNull() && !plan.Subnets.IsUnknown() {
+		var subnets []SubnetModel
+		resp.Diagnostics.Append(plan.Subnets.ElementsAs(ctx, &subnets, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		created := make([]string, 0, len(subnets))
+		for _, s := range subnets {
+			subnetBody := map[string]interface{}{
+				"name":      s.Name.ValueString(),
+				"vpcId":     plan.ID.ValueString(),
+				"cidrBlock": s.CIDRBlock.ValueString(),
+				"isPublic":  true,
+			}
+			if !s.Zone.IsNull() && !s.Zone.IsUnknown() {
+				subnetBody["availabilityZone"] = s.Zone.ValueString()
+			}
+			sBody, sStatus, sErr := r.client.Post("/networking/subnets", subnetBody)
+			if sErr != nil {
+				resp.Diagnostics.AddError("Error creating subnet", sErr.Error())
+				return
+			}
+			if sStatus < 200 || sStatus >= 300 {
+				resp.Diagnostics.AddError("API error creating subnet",
+					fmt.Sprintf("subnet %q: status %d: %s", s.Name.ValueString(), sStatus, string(sBody)))
+				return
+			}
+			// Carry the new subnet id back into state so the config can send an
+			// instance to a specific subnet (vpc.subnets[N].id).
+			var sResult map[string]interface{}
+			if err := json.Unmarshal(sBody, &sResult); err == nil {
+				created = append(created, getString(unwrapData(sResult), "id"))
+			} else {
+				created = append(created, "")
+			}
+		}
+
+		subnetValues := make([]attr.Value, len(subnets))
+		for i, s := range subnets {
+			zone := s.Zone
+			if zone.IsUnknown() {
+				zone = types.StringNull()
+			}
+			subnetValues[i], _ = types.ObjectValue(subnetAttrTypes, map[string]attr.Value{
+				"id":         types.StringValue(created[i]),
+				"name":       s.Name,
+				"cidr_block": s.CIDRBlock,
+				"zone":       zone,
+			})
+		}
+		subnetList, diags := types.ListValue(types.ObjectType{AttrTypes: subnetAttrTypes}, subnetValues)
+		resp.Diagnostics.Append(diags...)
+		plan.Subnets = subnetList
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -227,29 +314,69 @@ func (r *VPCResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	state.Name = types.StringValue(getString(result, "name"))
-	state.CIDRBlock = types.StringValue(getString(result, "cidr_block"))
-	state.Region = types.StringValue(getString(result, "region"))
-	state.EnableDNS = types.BoolValue(getBool(result, "enable_dns"))
-	state.EnableIPv6 = types.BoolValue(getBool(result, "enable_ipv6"))
-	state.Status = types.StringValue(getString(result, "status"))
-	state.DefaultSubnetID = types.StringValue(getString(result, "default_subnet_id"))
+	result = unwrapData(result)
 
-	// Parse subnets from response
-	if rawSubnets, ok := result["subnets"].([]interface{}); ok {
-		subnetValues := make([]attr.Value, len(rawSubnets))
-		for i, rawSubnet := range rawSubnets {
-			if s, ok := rawSubnet.(map[string]interface{}); ok {
-				zoneVal := types.StringValue(getString(s, "zone"))
-				if getString(s, "zone") == "" {
-					zoneVal = types.StringNull()
-				}
-				subnetValues[i], _ = types.ObjectValue(subnetAttrTypes, map[string]attr.Value{
-					"name":       types.StringValue(getString(s, "name")),
-					"cidr_block": types.StringValue(getString(s, "cidr_block")),
-					"zone":       zoneVal,
-				})
+	// Backend keys are camelCase; reading snake_case here always yielded empty
+	// values and permanent drift.
+	state.Name = types.StringValue(getString(result, "name"))
+	state.CIDRBlock = types.StringValue(getString(result, "cidrBlock"))
+	state.Region = types.StringValue(getString(result, "region"))
+	state.EnableDNS = types.BoolValue(getBool(result, "enableDnsSupport"))
+	state.EnableIPv6 = types.BoolValue(getBool(result, "enableIpv6"))
+	state.Status = types.StringValue(getString(result, "status"))
+	// Same as in Create: derive the default subnet from the subnets array.
+	// The backend names it "<vpc name>-subnet-1".
+	state.DefaultSubnetID = types.StringNull()
+	if raw, ok := result["subnets"].([]interface{}); ok {
+		for _, item := range raw {
+			sub, ok := item.(map[string]interface{})
+			if !ok {
+				continue
 			}
+			if getString(sub, "name") == getString(result, "name")+"-subnet-1" {
+				state.DefaultSubnetID = types.StringValue(getString(sub, "id"))
+				break
+			}
+		}
+		if state.DefaultSubnetID.IsNull() && len(raw) > 0 {
+			if first, ok := raw[0].(map[string]interface{}); ok {
+				state.DefaultSubnetID = types.StringValue(getString(first, "id"))
+			}
+		}
+	}
+
+	// Reconcile subnets against what the config declared. The API returns the
+	// backend's auto-created default subnet too; copying the raw list in made
+	// Terraform see a permanent diff (an extra block to destroy and one to
+	// rename) on every plan. Match by name and keep the declared order.
+	if raw, ok := result["subnets"].([]interface{}); ok && !state.Subnets.IsNull() {
+		remoto := map[string]map[string]interface{}{}
+		for _, item := range raw {
+			if sub, ok := item.(map[string]interface{}); ok {
+				remoto[getString(sub, "name")] = sub
+			}
+		}
+		var declaradas []SubnetModel
+		state.Subnets.ElementsAs(ctx, &declaradas, false)
+		subnetValues := make([]attr.Value, 0, len(declaradas))
+		for _, d := range declaradas {
+			sub, existe := remoto[d.Name.ValueString()]
+			if !existe {
+				// sumiu no lado do servidor: mantem o que estava no state para
+				// o plano acusar a recriacao
+				subnetValues = append(subnetValues, mustSubnetObject(d.ID, d.Name, d.CIDRBlock, d.Zone))
+				continue
+			}
+			zona := types.StringValue(getString(sub, "availabilityZone"))
+			if getString(sub, "availabilityZone") == "" {
+				zona = d.Zone
+			}
+			subnetValues = append(subnetValues, mustSubnetObject(
+				types.StringValue(getString(sub, "id")),
+				types.StringValue(getString(sub, "name")),
+				types.StringValue(getString(sub, "cidrBlock")),
+				zona,
+			))
 		}
 		subnetList, diags := types.ListValue(types.ObjectType{AttrTypes: subnetAttrTypes}, subnetValues)
 		resp.Diagnostics.Append(diags...)
@@ -273,9 +400,10 @@ func (r *VPCResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	}
 
 	body := map[string]interface{}{
-		"name":        plan.Name.ValueString(),
-		"enable_dns":  plan.EnableDNS.ValueBool(),
-		"enable_ipv6": plan.EnableIPv6.ValueBool(),
+		"name":               plan.Name.ValueString(),
+		"enableDnsSupport":   plan.EnableDNS.ValueBool(),
+		"enableDnsHostnames": plan.EnableDNS.ValueBool(),
+		"enableIpv6":         plan.EnableIPv6.ValueBool(),
 	}
 
 	if !plan.Subnets.IsNull() && !plan.Subnets.IsUnknown() {
@@ -338,4 +466,22 @@ func (r *VPCResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 			fmt.Sprintf("Status %d: %s", statusCode, string(respBody)))
 		return
 	}
+}
+
+// mustSubnetObject builds the object value for one subnets block.
+func mustSubnetObject(id, name, cidr, zone types.String) attr.Value {
+	v, _ := types.ObjectValue(subnetAttrTypes, map[string]attr.Value{
+		"id":         id,
+		"name":       name,
+		"cidr_block": cidr,
+		"zone":       zone,
+	})
+	return v
+}
+
+// ImportState permite `terraform import` pelo ID do recurso — essencial para
+// readotar infra existente ou recuperar um state perdido, que antes exigia
+// destruir tudo na mao e recriar.
+func (r *VPCResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -13,8 +14,9 @@ import (
 )
 
 var (
-	_ resource.Resource              = &ElasticIPResource{}
-	_ resource.ResourceWithConfigure = &ElasticIPResource{}
+	_ resource.Resource                = &ElasticIPResource{}
+	_ resource.ResourceWithConfigure   = &ElasticIPResource{}
+	_ resource.ResourceWithImportState = &ElasticIPResource{}
 )
 
 type ElasticIPResource struct {
@@ -45,12 +47,12 @@ func (r *ElasticIPResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 	resp.Schema = schema.Schema{
 		Description: "Manages a DevskinCloud Elastic IP. Optionally associates it with either a regular VM Instance OR a Kubernetes node (master/worker). When associated with a K8s node, ports 80/443/30080/30443 are auto-opened on pfSense.",
 		Attributes: map[string]schema.Attribute{
-			"id":          schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"region":      schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
-			"description": schema.StringAttribute{Optional: true},
-			"ip_version":  schema.StringAttribute{Optional: true, Computed: true, Description: "\"IPv4\" (default) or \"IPv6\""},
-			"ip_address":  schema.StringAttribute{Computed: true, Description: "The allocated public IP."},
-			"instance_id": schema.StringAttribute{Optional: true, Description: "Target VM instance id (mutually exclusive with kubernetes_cluster_id)"},
+			"id":                    schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"region":                schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
+			"description":           schema.StringAttribute{Optional: true},
+			"ip_version":            schema.StringAttribute{Optional: true, Computed: true, Description: "\"IPv4\" (default) or \"IPv6\""},
+			"ip_address":            schema.StringAttribute{Computed: true, Description: "The allocated public IP."},
+			"instance_id":           schema.StringAttribute{Optional: true, Description: "Target VM instance id (mutually exclusive with kubernetes_cluster_id)"},
 			"kubernetes_cluster_id": schema.StringAttribute{Optional: true, Description: "Target K8s cluster (use with node_name)"},
 			"node_name":             schema.StringAttribute{Optional: true, Description: "K8s node name from cluster.tags.vmIps (e.g. master-100, worker-101)"},
 			"status":                schema.StringAttribute{Computed: true},
@@ -102,6 +104,10 @@ func (r *ElasticIPResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// A API embrulha em { success, data }; ler o wrapper direto deixava id e
+	// ipAddress vazios — o associate ia para /elastic-ips//associate e voltava 404.
+	result = unwrapData(result)
+
 	plan.ID = types.StringValue(getString(result, "id"))
 	plan.IPAddress = types.StringValue(getString(result, "ipAddress"))
 	plan.IPVersion = types.StringValue(getString(result, "ipVersion"))
@@ -140,22 +146,33 @@ func (r *ElasticIPResource) Read(ctx context.Context, req resource.ReadRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	respBody, statusCode, err := r.client.Get(fmt.Sprintf("/networking/elastic-ips/%s", state.ID.ValueString()))
+	// Nao existe GET /networking/elastic-ips/{id} — so a listagem. Buscar pelo
+	// id devolvia 404 e o Read removia o recurso do state, fazendo o Terraform
+	// recriar o Elastic IP a cada plan.
+	respBody, statusCode, err := r.client.Get("/networking/elastic-ips")
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading elastic IP", err.Error())
-		return
-	}
-	if statusCode == 404 {
-		resp.State.RemoveResource(ctx)
 		return
 	}
 	if statusCode < 200 || statusCode >= 300 {
 		resp.Diagnostics.AddError("API error reading elastic IP", fmt.Sprintf("Status %d: %s", statusCode, string(respBody)))
 		return
 	}
-	var result map[string]interface{}
-	if err := json.Unmarshal(respBody, &result); err != nil {
+	var envelope map[string]interface{}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
 		resp.Diagnostics.AddError("Error parsing response", err.Error())
+		return
+	}
+	lista, _ := envelope["data"].([]interface{})
+	var result map[string]interface{}
+	for _, item := range lista {
+		if eip, ok := item.(map[string]interface{}); ok && getString(eip, "id") == state.ID.ValueString() {
+			result = eip
+			break
+		}
+	}
+	if result == nil {
+		resp.State.RemoveResource(ctx)
 		return
 	}
 	state.IPAddress = types.StringValue(getString(result, "ipAddress"))
@@ -181,12 +198,36 @@ func (r *ElasticIPResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// A API recusa liberar um IP ainda associado (IP_IN_USE), entao o destroy
+	// falhava sempre que o Elastic IP estava em uso. Desassocia primeiro; se
+	// nao estava associado, o erro e ignorado.
+	if !state.InstanceID.IsNull() || !state.KubernetesClusterID.IsNull() {
+		_, _, _ = r.client.Post(fmt.Sprintf("/networking/elastic-ips/%s/disassociate", state.ID.ValueString()), map[string]interface{}{})
+	}
+
 	respBody, statusCode, err := r.client.Delete(fmt.Sprintf("/networking/elastic-ips/%s", state.ID.ValueString()))
 	if err != nil {
 		resp.Diagnostics.AddError("Error releasing elastic IP", err.Error())
 		return
 	}
-	if statusCode < 200 || statusCode >= 300 && statusCode != 404 {
+	// Se ainda assim vier IP_IN_USE, tenta uma vez mais depois de desassociar —
+	// cobre o caso do state nao saber da associacao (recurso importado).
+	if statusCode == 400 {
+		_, _, _ = r.client.Post(fmt.Sprintf("/networking/elastic-ips/%s/disassociate", state.ID.ValueString()), map[string]interface{}{})
+		respBody, statusCode, err = r.client.Delete(fmt.Sprintf("/networking/elastic-ips/%s", state.ID.ValueString()))
+		if err != nil {
+			resp.Diagnostics.AddError("Error releasing elastic IP", err.Error())
+			return
+		}
+	}
+	if statusCode != 404 && (statusCode < 200 || statusCode >= 300) {
 		resp.Diagnostics.AddError("API error releasing elastic IP", fmt.Sprintf("Status %d: %s", statusCode, string(respBody)))
 	}
+}
+
+// ImportState permite `terraform import` pelo ID do recurso — essencial para
+// readotar infra existente ou recuperar um state perdido, que antes exigia
+// destruir tudo na mao e recriar.
+func (r *ElasticIPResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -14,14 +15,19 @@ import (
 )
 
 var (
-	_ resource.Resource              = &InstanceResource{}
-	_ resource.ResourceWithConfigure = &InstanceResource{}
+	_ resource.Resource                = &InstanceResource{}
+	_ resource.ResourceWithConfigure   = &InstanceResource{}
+	_ resource.ResourceWithImportState = &InstanceResource{}
 )
 
 type InstanceResource struct {
 	client *ApiClient
 }
 
+// Attribute names are snake_case for HCL ergonomics; the request bodies
+// translate to the backend's camelCase keys (instanceType, imageId, ...).
+// Sending snake_case straight through fails validation with
+// {"instanceType":["Required"],"imageId":["Required"],...}.
 type InstanceResourceModel struct {
 	ID                   types.String `tfsdk:"id"`
 	Name                 types.String `tfsdk:"name"`
@@ -31,6 +37,12 @@ type InstanceResourceModel struct {
 	VPCID                types.String `tfsdk:"vpc_id"`
 	SubnetID             types.String `tfsdk:"subnet_id"`
 	IPv6                 types.Bool   `tfsdk:"ipv6"`
+	SecurityGroupIDs     types.List   `tfsdk:"security_group_ids"`
+	KeyPairID            types.String `tfsdk:"key_pair_id"`
+	VolumeSize           types.Int64  `tfsdk:"volume_size"`
+	VolumeType           types.String `tfsdk:"volume_type"`
+	AssignPublicIP       types.Bool   `tfsdk:"assign_public_ip"`
+	Tags                 types.Map    `tfsdk:"tags"`
 	Status               types.String `tfsdk:"status"`
 	PublicIP             types.String `tfsdk:"public_ip"`
 	PrivateIP            types.String `tfsdk:"private_ip"`
@@ -57,15 +69,15 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"name": schema.StringAttribute{
-				Description: "The name of the instance.",
+				Description: "The name of the instance. Letters, numbers and hyphens only.",
 				Required:    true,
 			},
 			"instance_type": schema.StringAttribute{
-				Description: "The instance type (e.g. ds.small, ds.medium, ds.large).",
+				Description: "The instance type (e.g. c5.large, c5.xlarge, c5.4c16). Must exist and be available in the catalog — AWS names like t3.medium are registered but disabled.",
 				Required:    true,
 			},
 			"image_id": schema.StringAttribute{
-				Description: "The ID of the image to use for the instance.",
+				Description: "The template to boot from (e.g. tpl-9100 for Ubuntu).",
 				Required:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -97,6 +109,36 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
+			},
+			"security_group_ids": schema.ListAttribute{
+				Description:   "Security groups to attach. Omit to use the VPC default.",
+				Optional:      true,
+				ElementType:   types.StringType,
+				PlanModifiers: []planmodifier.List{},
+			},
+			"key_pair_id": schema.StringAttribute{
+				Description: "SSH key pair ID to inject at boot.",
+				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"volume_size": schema.Int64Attribute{
+				Description: "Root volume size in GB (20-16384). Defaults to 25 when omitted.",
+				Optional:    true,
+			},
+			"volume_type": schema.StringAttribute{
+				Description: "Root volume type (e.g. gp3). Defaults to gp3.",
+				Optional:    true,
+			},
+			"assign_public_ip": schema.BoolAttribute{
+				Description: "Whether to allocate a public IP at creation. Defaults to true.",
+				Optional:    true,
+			},
+			"tags": schema.MapAttribute{
+				Description: "Key/value tags applied to the instance.",
+				Optional:    true,
+				ElementType: types.StringType,
 			},
 			"status": schema.StringAttribute{
 				Description: "The current status of the instance.",
@@ -142,21 +184,44 @@ func (r *InstanceResource) Configure(_ context.Context, req resource.ConfigureRe
 	r.client = client
 }
 
-func (r *InstanceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan InstanceResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
+// buildCreateBody maps the HCL attributes onto createInstanceSchema
+// (camelCase keys) in compute.controller.ts.
+func (r *InstanceResource) buildCreateBody(ctx context.Context, plan InstanceResourceModel) map[string]interface{} {
+	body := map[string]interface{}{
+		"name":         plan.Name.ValueString(),
+		"instanceType": plan.InstanceType.ValueString(),
+		"imageId":      plan.ImageID.ValueString(),
+		"region":       plan.Region.ValueString(),
+		"vpcId":        plan.VPCID.ValueString(),
+		"subnetId":     plan.SubnetID.ValueString(),
+		"ipv6":         plan.IPv6.ValueBool(),
 	}
 
-	body := map[string]interface{}{
-		"name":          plan.Name.ValueString(),
-		"instance_type": plan.InstanceType.ValueString(),
-		"image_id":      plan.ImageID.ValueString(),
-		"region":        plan.Region.ValueString(),
-		"vpc_id":        plan.VPCID.ValueString(),
-		"subnet_id":     plan.SubnetID.ValueString(),
-		"ipv6":          plan.IPv6.ValueBool(),
+	if !plan.SecurityGroupIDs.IsNull() && !plan.SecurityGroupIDs.IsUnknown() {
+		var ids []string
+		plan.SecurityGroupIDs.ElementsAs(ctx, &ids, false)
+		if len(ids) > 0 {
+			body["securityGroupIds"] = ids
+		}
+	}
+	if !plan.KeyPairID.IsNull() && !plan.KeyPairID.IsUnknown() {
+		body["keyPairId"] = plan.KeyPairID.ValueString()
+	}
+	if !plan.VolumeSize.IsNull() && !plan.VolumeSize.IsUnknown() {
+		body["volumeSize"] = plan.VolumeSize.ValueInt64()
+	}
+	if !plan.VolumeType.IsNull() && !plan.VolumeType.IsUnknown() {
+		body["volumeType"] = plan.VolumeType.ValueString()
+	}
+	if !plan.AssignPublicIP.IsNull() && !plan.AssignPublicIP.IsUnknown() {
+		body["publicIp"] = plan.AssignPublicIP.ValueBool()
+	}
+	if !plan.Tags.IsNull() && !plan.Tags.IsUnknown() {
+		var tags map[string]string
+		plan.Tags.ElementsAs(ctx, &tags, false)
+		if len(tags) > 0 {
+			body["tags"] = tags
+		}
 	}
 
 	// Optional Flux enrollment — only consumed at create time. Boolean
@@ -177,8 +242,34 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 			body["monitoringEnrollment"] = enrollment
 		}
 	}
+	return body
+}
 
-	respBody, statusCode, err := r.client.Post("/compute/instances", body)
+// unwrap pulls the payload out of the `{ success, data }` envelope the backend
+// uses on most routes. Reading the wrapper directly yields empty IDs.
+func unwrapData(result map[string]interface{}) map[string]interface{} {
+	if data, ok := result["data"].(map[string]interface{}); ok {
+		return data
+	}
+	return result
+}
+
+// applyRemote copies the API response (camelCase) onto the model.
+func applyInstanceRemote(m *InstanceResourceModel, result map[string]interface{}) {
+	m.ID = types.StringValue(getString(result, "id"))
+	m.Status = types.StringValue(getString(result, "status"))
+	m.PublicIP = types.StringValue(getString(result, "publicIp"))
+	m.PrivateIP = types.StringValue(getString(result, "privateIp"))
+}
+
+func (r *InstanceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan InstanceResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	respBody, statusCode, err := r.client.Post("/compute/instances", r.buildCreateBody(ctx, plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating instance", err.Error())
 		return
@@ -194,11 +285,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		resp.Diagnostics.AddError("Error parsing response", err.Error())
 		return
 	}
-
-	plan.ID = types.StringValue(getString(result, "id"))
-	plan.Status = types.StringValue(getString(result, "status"))
-	plan.PublicIP = types.StringValue(getString(result, "public_ip"))
-	plan.PrivateIP = types.StringValue(getString(result, "private_ip"))
+	applyInstanceRemote(&plan, unwrapData(result))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -230,17 +317,18 @@ func (r *InstanceResource) Read(ctx context.Context, req resource.ReadRequest, r
 		resp.Diagnostics.AddError("Error parsing response", err.Error())
 		return
 	}
+	data := unwrapData(result)
 
-	state.Name = types.StringValue(getString(result, "name"))
-	state.InstanceType = types.StringValue(getString(result, "instance_type"))
-	state.ImageID = types.StringValue(getString(result, "image_id"))
-	state.Region = types.StringValue(getString(result, "region"))
-	state.VPCID = types.StringValue(getString(result, "vpc_id"))
-	state.SubnetID = types.StringValue(getString(result, "subnet_id"))
-	state.IPv6 = types.BoolValue(getBool(result, "ipv6"))
-	state.Status = types.StringValue(getString(result, "status"))
-	state.PublicIP = types.StringValue(getString(result, "public_ip"))
-	state.PrivateIP = types.StringValue(getString(result, "private_ip"))
+	// Backend keys are camelCase. The previous version read snake_case here,
+	// which never matched and reported permanent drift.
+	state.Name = types.StringValue(getString(data, "name"))
+	state.InstanceType = types.StringValue(getString(data, "instanceType"))
+	state.ImageID = types.StringValue(getString(data, "imageId"))
+	state.Region = types.StringValue(getString(data, "region"))
+	state.VPCID = types.StringValue(getString(data, "vpcId"))
+	state.SubnetID = types.StringValue(getString(data, "subnetId"))
+	state.IPv6 = types.BoolValue(getBool(data, "ipv6"))
+	applyInstanceRemote(&state, data)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
@@ -259,9 +347,9 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	body := map[string]interface{}{
-		"name":          plan.Name.ValueString(),
-		"instance_type": plan.InstanceType.ValueString(),
-		"ipv6":          plan.IPv6.ValueBool(),
+		"name":         plan.Name.ValueString(),
+		"instanceType": plan.InstanceType.ValueString(),
+		"ipv6":         plan.IPv6.ValueBool(),
 	}
 
 	respBody, statusCode, err := r.client.Put(fmt.Sprintf("/compute/instances/%s", state.ID.ValueString()), body)
@@ -280,11 +368,12 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		resp.Diagnostics.AddError("Error parsing response", err.Error())
 		return
 	}
+	data := unwrapData(result)
 
 	plan.ID = state.ID
-	plan.Status = types.StringValue(getString(result, "status"))
-	plan.PublicIP = types.StringValue(getString(result, "public_ip"))
-	plan.PrivateIP = types.StringValue(getString(result, "private_ip"))
+	plan.Status = types.StringValue(getString(data, "status"))
+	plan.PublicIP = types.StringValue(getString(data, "publicIp"))
+	plan.PrivateIP = types.StringValue(getString(data, "privateIp"))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
@@ -324,4 +413,11 @@ func getBool(m map[string]interface{}, key string) bool {
 		}
 	}
 	return false
+}
+
+// ImportState permite `terraform import` pelo ID do recurso — essencial para
+// readotar infra existente ou recuperar um state perdido, que antes exigia
+// destruir tudo na mao e recriar.
+func (r *InstanceResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
