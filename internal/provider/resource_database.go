@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -38,6 +39,7 @@ type DatabaseResourceModel struct {
 	VPCID          types.String `tfsdk:"vpc_id"`
 	Region         types.String `tfsdk:"region"`
 	MultiAz        types.Bool   `tfsdk:"multi_az"`
+	PublicAccess   types.Bool   `tfsdk:"public_access"`
 	Replicas       types.Int64  `tfsdk:"replicas"`
 	Status         types.String `tfsdk:"status"`
 	Endpoint       types.String `tfsdk:"endpoint"`
@@ -118,6 +120,15 @@ func (r *DatabaseResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 			},
+			"public_access": schema.BoolAttribute{
+				Description: "Expoe o banco na internet com IP publico e port-forward. " +
+					"O PADRAO DA API E true — aqui o padrao e false, de proposito: banco de " +
+					"aplicacao deve ser alcancado pela rede privada. So marque true se o " +
+					"acesso externo for requisito, e nunca sem senha forte.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
 			"multi_az": schema.BoolAttribute{
 				Description: "HA failover flag (currently a tag; future: true HA).",
 				Optional:    true,
@@ -195,6 +206,9 @@ func (r *DatabaseResource) buildCreateBody(plan DatabaseResourceModel) map[strin
 		"username":      plan.Username.ValueString(),
 		"password":      plan.Password.ValueString(),
 		"vpcId":         plan.VPCID.ValueString(),
+		// Sempre explicito: omitir faz a API aplicar o default dela, que e
+		// true (banco nasce com IP publico). Ver database.controller.ts.
+		"publicAccess":  plan.PublicAccess.ValueBool(),
 	}
 	if !plan.MultiAz.IsNull() && !plan.MultiAz.IsUnknown() {
 		body["multiAz"] = plan.MultiAz.ValueBool()
@@ -253,6 +267,9 @@ func (r *DatabaseResource) Create(ctx context.Context, req resource.CreateReques
 	if plan.MultiAz.IsUnknown() || plan.MultiAz.IsNull() {
 		plan.MultiAz = types.BoolValue(getBool(result, "multiAz"))
 	}
+	if plan.PublicAccess.IsUnknown() || plan.PublicAccess.IsNull() {
+		plan.PublicAccess = types.BoolValue(getBool(result, "publicAccess"))
+	}
 	if plan.Replicas.IsUnknown() || plan.Replicas.IsNull() {
 		plan.Replicas = types.Int64Value(getInt64(result, "replicas"))
 	}
@@ -303,6 +320,7 @@ func (r *DatabaseResource) Read(ctx context.Context, req resource.ReadRequest, r
 	state.VPCID = types.StringValue(getString(result, "vpcId"))
 	state.Region = types.StringValue(getString(result, "region"))
 	state.MultiAz = types.BoolValue(getBool(result, "multiAz"))
+	state.PublicAccess = types.BoolValue(getBool(result, "publicAccess"))
 	state.Replicas = types.Int64Value(getInt64(result, "replicas"))
 	state.Status = types.StringValue(getString(result, "status"))
 	state.Endpoint = types.StringValue(getString(result, "endpoint"))

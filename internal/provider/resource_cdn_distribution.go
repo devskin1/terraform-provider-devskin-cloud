@@ -118,11 +118,20 @@ func applyCDN(m *CDNDistributionResourceModel, d map[string]interface{}) {
 	m.Name = types.StringValue(getString(d, "name"))
 	m.Status = types.StringValue(getString(d, "status"))
 	m.DomainName = types.StringValue(getString(d, "domainName"))
-	if v := getString(d, "sslMode"); v != "" {
-		m.SSLMode = types.StringValue(v)
-	}
 	m.Enabled = types.BoolValue(getBool(d, "enabled"))
-	m.ForceHTTPS = types.BoolValue(getBool(d, "forceHttps"))
+	// sslMode e forceHttps NAO vem no topo da resposta: o backend os funde
+	// dentro de "tags" (mergedTags em cdn.controller.ts). Ler do topo devolvia
+	// vazio e sobrescrevia o valor planejado por false — o que fazia o
+	// Terraform abortar com "provider produced inconsistent result after
+	// apply". Lemos de tags e, se nao houver, preservamos o que foi planejado.
+	if tags, ok := d["tags"].(map[string]interface{}); ok {
+		if v := getString(tags, "sslMode"); v != "" {
+			m.SSLMode = types.StringValue(v)
+		}
+		if _, existe := tags["forceHttps"]; existe {
+			m.ForceHTTPS = types.BoolValue(getBool(tags, "forceHttps"))
+		}
+	}
 }
 
 func (r *CDNDistributionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

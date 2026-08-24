@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -94,7 +95,10 @@ func (r *ApiGatewayResource) body(ctx context.Context, m ApiGatewayResourceModel
 		"protocol":          m.Protocol.ValueString(),
 		"authType":          m.AuthType.ValueString(),
 		"corsEnabled":       m.CorsEnabled.ValueBool(),
-		"corsOrigins":       origins,
+		// A API espera STRING, nao array (corsOrigins: z.string() em
+		// apigateway.controller.ts). Mantemos lista no Terraform, que e a
+		// forma natural de declarar, e juntamos com virgula ao enviar.
+		"corsOrigins":       strings.Join(origins, ","),
 		"throttlingEnabled": m.ThrottlingEnabled.ValueBool(),
 	}
 	if !m.BurstLimit.IsNull() && !m.BurstLimit.IsUnknown() {
@@ -106,19 +110,41 @@ func (r *ApiGatewayResource) body(ctx context.Context, m ApiGatewayResourceModel
 	return b
 }
 
+// applyApiGateway so sobrescreve o que a API realmente devolveu.
+//
+// description, corsEnabled, corsOrigins, throttlingEnabled, burstLimit e
+// rateLimit NAO sao colunas: o backend serializa todos dentro do campo
+// "authorizers" (ver prisma.apiGateway.create em apigateway.controller.ts).
+// Lendo do topo, todos voltavam vazios e sobrescreviam o que o usuario
+// declarou — o Terraform entao abortava com "provider produced inconsistent
+// result after apply". Quando o campo nao vier em lugar nenhum, preservamos
+// o valor planejado.
 func applyApiGateway(m *ApiGatewayResourceModel, d map[string]interface{}) {
 	m.ID = types.StringValue(getString(d, "id"))
 	m.Name = types.StringValue(getString(d, "name"))
 	m.Status = types.StringValue(getString(d, "status"))
-	m.Description = types.StringValue(getString(d, "description"))
 	if v := getString(d, "protocol"); v != "" {
 		m.Protocol = types.StringValue(v)
 	}
-	if v := getString(d, "authType"); v != "" {
+
+	// Os detalhes podem vir no topo (se a API enriquecer a resposta) ou
+	// aninhados em "authorizers". Procuramos nos dois, nessa ordem.
+	det := d
+	if a, ok := d["authorizers"].(map[string]interface{}); ok {
+		det = a
+	}
+	if v := getString(det, "description"); v != "" {
+		m.Description = types.StringValue(v)
+	}
+	if v := getString(det, "authType"); v != "" {
 		m.AuthType = types.StringValue(v)
 	}
-	m.CorsEnabled = types.BoolValue(getBool(d, "corsEnabled"))
-	m.ThrottlingEnabled = types.BoolValue(getBool(d, "throttlingEnabled"))
+	if _, existe := det["corsEnabled"]; existe {
+		m.CorsEnabled = types.BoolValue(getBool(det, "corsEnabled"))
+	}
+	if _, existe := det["throttlingEnabled"]; existe {
+		m.ThrottlingEnabled = types.BoolValue(getBool(det, "throttlingEnabled"))
+	}
 }
 
 func (r *ApiGatewayResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
