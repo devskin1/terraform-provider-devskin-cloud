@@ -94,11 +94,14 @@ func (r *CDNDistributionResource) body(ctx context.Context, m CDNDistributionRes
 	if !m.Aliases.IsNull() && !m.Aliases.IsUnknown() {
 		m.Aliases.ElementsAs(ctx, &aliases, false)
 	}
-	// A API recebe origins como lista livre; montamos a forma minima que ela
-	// espera a partir de um unico dominio de origem, que cobre o caso real.
+	// A API recebe origins como lista livre (z.array(z.any())), entao NAO
+	// valida o formato de dentro — o campo errado passa e so aparece na hora
+	// de servir. O proxy da CDN le `origins[0].domain`; mandavamos
+	// `domainName` e o resultado era distribuicao criada com sucesso servindo
+	// 502 "No origin configured". `path` acompanha porque o proxy tambem o le.
 	b := map[string]interface{}{
 		"name":       m.Name.ValueString(),
-		"origins":    []map[string]interface{}{{"domainName": m.OriginDomain.ValueString()}},
+		"origins":    []map[string]interface{}{{"domain": m.OriginDomain.ValueString(), "path": "/"}},
 		"aliases":    aliases,
 		"sslMode":    m.SSLMode.ValueString(),
 		"forceHttps": m.ForceHTTPS.ValueBool(),
@@ -132,6 +135,40 @@ func applyCDN(m *CDNDistributionResourceModel, d map[string]interface{}) {
 			m.ForceHTTPS = types.BoolValue(getBool(tags, "forceHttps"))
 		}
 	}
+	// Le a origem de volta. Sem isto o `plan` nunca acusa desvio (alguem muda
+	// a origem pela API e o Terraform nao ve) e o `import` traz origin_domain
+	// vazio, o que gera um replace desnecessario no primeiro apply.
+	// O backend guarda origins ora como array, ora como string JSON — depende
+	// de ter passado pelo Prisma ou pela serializacao do controller.
+	if dom := origemDoResultado(d["origins"]); dom != "" {
+		m.OriginDomain = types.StringValue(dom)
+	}
+}
+
+// origemDoResultado extrai origins[0].domain aceitando array ou string JSON.
+func origemDoResultado(v interface{}) string {
+	var lista []interface{}
+	switch t := v.(type) {
+	case []interface{}:
+		lista = t
+	case string:
+		if t == "" {
+			return ""
+		}
+		if err := json.Unmarshal([]byte(t), &lista); err != nil {
+			return ""
+		}
+	default:
+		return ""
+	}
+	if len(lista) == 0 {
+		return ""
+	}
+	primeiro, ok := lista[0].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return getString(primeiro, "domain")
 }
 
 func (r *CDNDistributionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
