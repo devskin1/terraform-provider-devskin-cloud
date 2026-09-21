@@ -109,6 +109,7 @@ func (p *DevskinProvider) Resources(_ context.Context) []func() resource.Resourc
 		NewSecurityGroupResource,
 		NewBucketResource,
 		NewSecretResource,
+		NewSSLCertificateResource,
 		NewFunctionResource,
 		NewApiGatewayResource,
 		NewLoadBalancerResource,
