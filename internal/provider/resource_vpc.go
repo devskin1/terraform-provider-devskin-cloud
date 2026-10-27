@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -169,6 +170,59 @@ func (r *VPCResource) Configure(_ context.Context, req resource.ConfigureRequest
 	r.client = client
 }
 
+const vpcProvisionTimeout = 6 * time.Minute
+
+// var, nao const: o teste encurta o intervalo para nao esperar em tempo real.
+var vpcPollInterval = 5 * time.Second
+
+// waitForVPCReady aguarda o backend terminar de provisionar a VPC.
+//
+// POST /networking/vpcs responde 202 na hora, com status CREATING e `subnets`
+// vazio: a VLAN, o DHCP, o NAT e a subnet padrao sao criados depois e levam de
+// 1 a 3 minutos (se respondesse so no fim, o Cloudflare cortaria em ~100s).
+// Ler a resposta do POST deixava default_subnet_id vazio, entao qualquer
+// kubmix_instance no mesmo apply falhava e so um `terraform refresh` seguido
+// de outro apply resolvia.
+func waitForVPCReady(ctx context.Context, client *ApiClient, id string, timeout time.Duration) (map[string]interface{}, error) {
+	deadline := time.Now().Add(timeout)
+	last := map[string]interface{}{}
+	for {
+		body, status, err := client.Get(fmt.Sprintf("/networking/vpcs/%s", id))
+		if err != nil {
+			return nil, fmt.Errorf("lendo a VPC %s: %w", id, err)
+		}
+		switch {
+		case status >= 200 && status < 300:
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(body, &parsed); err != nil {
+				return nil, fmt.Errorf("resposta invalida ao ler a VPC %s: %w", id, err)
+			}
+			last = unwrapData(parsed)
+			switch getString(last, "status") {
+			case "RUNNING":
+				return last, nil
+			case "ERROR":
+				return nil, fmt.Errorf("a VPC %s terminou o provisionamento com status ERROR "+
+					"(normalmente a VLAN nao subiu no firewall); verifique no painel antes de repetir o apply", id)
+			}
+		case status == 404:
+			// leitura correndo na frente da escrita logo apos o 202; tenta de novo
+		default:
+			return nil, fmt.Errorf("lendo a VPC %s: status %d: %s", id, status, string(body))
+		}
+
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("a VPC %s continua em %q depois de %s; o provisionamento pode ainda terminar sozinho, "+
+				"rode `terraform refresh` e o apply de novo", id, getString(last, "status"), timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(vpcPollInterval):
+		}
+	}
+}
+
 func (r *VPCResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan VPCResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -208,21 +262,71 @@ func (r *VPCResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 	data := unwrapData(result)
 
-	plan.ID = types.StringValue(getString(data, "id"))
+	vpcID := getString(data, "id")
+	if vpcID == "" {
+		resp.Diagnostics.AddError("VPC criada sem id",
+			fmt.Sprintf("a API aceitou a criacao mas nao devolveu o id: %s", string(respBody)))
+		return
+	}
+	plan.ID = types.StringValue(vpcID)
+
+	// Grava o id antes de esperar: se o wait falhar, a VPC fica no state e o
+	// destroy a alcanca, em vez de virar recurso orfao na conta do cliente.
+	// O state nao aceita valor unknown, entao todo campo computed precisa de um
+	// valor concreto ja aqui; os definitivos entram depois do wait.
+	subnetsPlanejadas := plan.Subnets
+	plan.Status = types.StringValue(getString(data, "status"))
+	if plan.CIDRBlock.IsNull() || plan.CIDRBlock.IsUnknown() {
+		plan.CIDRBlock = types.StringValue(getString(data, "cidrBlock"))
+	}
+	plan.DefaultSubnetID = types.StringNull()
+	if plan.Subnets.IsUnknown() {
+		plan.Subnets = types.ListNull(types.ObjectType{AttrTypes: subnetAttrTypes})
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.Subnets = subnetsPlanejadas
+
+	ready, err := waitForVPCReady(ctx, r.client, vpcID, vpcProvisionTimeout)
+	if err != nil {
+		resp.Diagnostics.AddError("Falha ao aguardar a VPC ficar pronta", err.Error())
+		return
+	}
+	data = ready
+
 	plan.Status = types.StringValue(getString(data, "status"))
 	if plan.CIDRBlock.IsNull() || plan.CIDRBlock.IsUnknown() {
 		plan.CIDRBlock = types.StringValue(getString(data, "cidrBlock"))
 	}
 
-	// There is no `defaultSubnetId` field: the response carries a `subnets`
-	// array, and at this point it holds exactly the one subnet the backend
-	// auto-creates. Reading the non-existent field left subnet_id empty and
-	// every instance failed with SUBNET_VPC_MISMATCH.
+	// Nao existe campo `defaultSubnetId`: a subnet padrao vem dentro do array
+	// `subnets`, criada pelo backend durante o provisionamento. Mesma regra do
+	// Read (nome "<vpc>-subnet-1"), com o primeiro item como reserva.
 	plan.DefaultSubnetID = types.StringNull()
-	if raw, ok := data["subnets"].([]interface{}); ok && len(raw) > 0 {
-		if first, ok := raw[0].(map[string]interface{}); ok {
-			plan.DefaultSubnetID = types.StringValue(getString(first, "id"))
+	if raw, ok := data["subnets"].([]interface{}); ok {
+		for _, item := range raw {
+			sub, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if getString(sub, "name") == getString(data, "name")+"-subnet-1" {
+				plan.DefaultSubnetID = types.StringValue(getString(sub, "id"))
+				break
+			}
 		}
+		if plan.DefaultSubnetID.IsNull() && len(raw) > 0 {
+			if first, ok := raw[0].(map[string]interface{}); ok {
+				plan.DefaultSubnetID = types.StringValue(getString(first, "id"))
+			}
+		}
+	}
+	if plan.DefaultSubnetID.IsNull() {
+		resp.Diagnostics.AddError("VPC pronta mas sem subnet padrao",
+			fmt.Sprintf("a VPC %s esta RUNNING e nao devolveu nenhuma subnet; "+
+				"uma kubmix_instance apontando para default_subnet_id falharia com SUBNET_VPC_MISMATCH", vpcID))
+		return
 	}
 
 	// The VPC create endpoint ignores a subnet list and always provisions one
