@@ -253,6 +253,13 @@ func (r *DatabaseResource) Create(ctx context.Context, req resource.CreateReques
 	}
 
 	plan.ID = types.StringValue(getString(result, "id"))
+
+	// endpoint e porta do banco so existem quando ele termina de subir; ate la o
+	// POST devolve os campos vazios. Troca o payload pelo mais recente antes de
+	// preencher o estado logo abaixo.
+	if novo := aguardarRecurso(ctx, r.client, "/database/instances", plan.ID.ValueString(), "o banco de dados", &resp.Diagnostics); novo != nil {
+		result = novo
+	}
 	plan.Status = types.StringValue(getString(result, "status"))
 	plan.Endpoint = types.StringValue(getString(result, "endpoint"))
 	plan.ReaderEndpoint = types.StringValue(getString(result, "readerEndpoint"))

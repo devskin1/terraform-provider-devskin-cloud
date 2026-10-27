@@ -298,6 +298,13 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	}
 	applyInstanceRemote(&plan, unwrapData(result))
 
+	// A VM nasce CREATING e so ganha ip publico/privado quando termina de
+	// provisionar. Sem esperar, quem referenciasse public_ip no mesmo apply
+	// recebia string vazia.
+	if novo := aguardarRecurso(ctx, r.client, "/compute/instances", plan.ID.ValueString(), "a instancia", &resp.Diagnostics); novo != nil {
+		applyInstanceRemote(&plan, novo)
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 

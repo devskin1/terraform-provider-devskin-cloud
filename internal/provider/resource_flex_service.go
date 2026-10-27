@@ -222,6 +222,11 @@ func (r *FlexServiceResource) Create(ctx context.Context, req resource.CreateReq
 
 	r.applyResultToState(ctx, result, &plan)
 
+	// A url do servico so existe depois que o deploy termina.
+	if novo := aguardarRecurso(ctx, r.client, "/flex/services", plan.ID.ValueString(), "o servico flex", &resp.Diagnostics); novo != nil {
+		r.applyResultToState(ctx, novo, &plan)
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 

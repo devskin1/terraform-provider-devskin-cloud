@@ -230,6 +230,12 @@ func (r *ContainerServiceResource) Create(ctx context.Context, req resource.Crea
 	}
 
 	plan.ID = types.StringValue(getString(result, "id"))
+
+	// url, ip publico e endpoint so aparecem depois que o servico sobe.
+	if novo := aguardarRecurso(ctx, r.client, "/containers/services", plan.ID.ValueString(), "o servico de container", &resp.Diagnostics); novo != nil {
+		result = novo
+	}
+
 	plan.Status = types.StringValue(getString(result, "status"))
 	plan.PublicIP = types.StringValue(getString(result, "publicIp"))
 	plan.PublicEndpoint = types.StringValue(getString(result, "publicEndpoint"))

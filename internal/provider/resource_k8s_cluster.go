@@ -391,6 +391,12 @@ func (r *K8sClusterResource) Create(ctx context.Context, req resource.CreateRequ
 	}
 
 	plan.ID = types.StringValue(getString(result, "id"))
+
+	// O endpoint do apiserver, o certificado da CA e o emissor OIDC so saem
+	// depois que o cluster sobe.
+	if novo := aguardarRecurso(ctx, r.client, "/kubernetes/clusters", plan.ID.ValueString(), "o cluster kubernetes", &resp.Diagnostics); novo != nil {
+		result = novo
+	}
 	plan.Status = types.StringValue(getString(result, "status"))
 	plan.Endpoint = types.StringValue(getString(result, "endpoint"))
 	plan.CACert = types.StringValue(getString(result, "ca_cert"))

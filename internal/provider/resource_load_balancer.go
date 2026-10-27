@@ -127,6 +127,12 @@ func (r *LoadBalancerResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 	applyLoadBalancer(&plan, unwrapData(result))
+
+	// O dns_name do balanceador so e publicado no fim do provisionamento.
+	if novo := aguardarRecurso(ctx, r.client, "/networking/load-balancers", plan.ID.ValueString(), "o balanceador", &resp.Diagnostics); novo != nil {
+		applyLoadBalancer(&plan, novo)
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 }
 
