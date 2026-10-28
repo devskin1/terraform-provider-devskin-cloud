@@ -40,6 +40,26 @@ func emProvisionamento(status string) bool {
 	return false
 }
 
+// recursoFoiDestruido diz se o backend ja considera o recurso morto.
+//
+// Instancia, banco e load balancer NAO somem da tabela quando sao apagados
+// pelo painel: viram TERMINATED e o GET por id segue respondendo 200 com o
+// registro inteiro. O Read so tirava do estado em 404, entao o Terraform
+// continuava achando que o recurso existia — `terraform refresh` nao acusava
+// nada e o apply seguinte nao recriava nada. Visto em 28/10 na Awise: VM
+// apagada pelo painel, state intacto, plan vazio, sem jeito de recriar.
+//
+// TERMINATING entra junto porque e so o caminho ate TERMINATED: quem ja
+// mandou destruir nao vai voltar atras, e esperar o status final so adiaria
+// a recriacao para o apply seguinte.
+func recursoFoiDestruido(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "TERMINATED", "TERMINATING", "DELETED", "DELETING":
+		return true
+	}
+	return false
+}
+
 func provisionamentoFalhou(status string) bool {
 	switch strings.ToUpper(strings.TrimSpace(status)) {
 	case "ERROR", "FAILED":

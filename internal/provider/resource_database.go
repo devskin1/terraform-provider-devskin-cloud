@@ -315,6 +315,13 @@ func (r *DatabaseResource) Read(ctx context.Context, req resource.ReadRequest, r
 		result = data
 	}
 
+	// Apagado pelo painel: delete logico, 200 com status TERMINATED
+	// (ver recursoFoiDestruido).
+	if recursoFoiDestruido(getString(result, "status")) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	// Backend keys are camelCase; the old version was reading
 	// snake_case (instance_class / vpc_id) which never matched and
 	// returned empty strings -- forcing TF to perpetually plan a

@@ -160,7 +160,14 @@ func (r *LoadBalancerResource) Read(ctx context.Context, req resource.ReadReques
 		resp.Diagnostics.AddError("Error parsing response", err.Error())
 		return
 	}
-	applyLoadBalancer(&state, unwrapData(result))
+	data := unwrapData(result)
+	// Apagado pelo painel: delete logico, 200 com status TERMINATED
+	// (ver recursoFoiDestruido).
+	if recursoFoiDestruido(getString(data, "status")) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	applyLoadBalancer(&state, data)
 	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
 }
 

@@ -337,6 +337,13 @@ func (r *InstanceResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 	data := unwrapData(result)
 
+	// Apagada pelo painel: o backend faz delete logico e responde 200 com
+	// status TERMINATED (ver recursoFoiDestruido).
+	if recursoFoiDestruido(getString(data, "status")) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	// Backend keys are camelCase. The previous version read snake_case here,
 	// which never matched and reported permanent drift.
 	state.Name = types.StringValue(getString(data, "name"))
