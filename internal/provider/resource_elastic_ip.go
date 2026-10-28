@@ -131,9 +131,22 @@ func (r *ElasticIPResource) Create(ctx context.Context, req resource.CreateReque
 			resp.Diagnostics.AddError("Error associating elastic IP", aerr.Error())
 			return
 		}
+		// Falha no associate e ERRO, nao aviso. Como aviso, o apply terminava
+		// "com sucesso", o estado era gravado com instance_id preenchido e o
+		// Read seguinte lia o mesmo instance_id da API (o banco guarda a
+		// associacao mesmo sem regra no firewall) — entao nao havia drift e o
+		// apply seguinte nunca tentava de novo. O cliente ficava com um Elastic
+		// IP que o painel mostra associado e que nao chega na maquina, sem
+		// nenhum caminho pelo Terraform para consertar.
 		if sc < 200 || sc >= 300 {
-			resp.Diagnostics.AddWarning("Elastic IP associate failed",
-				fmt.Sprintf("Allocation succeeded but associate returned %d. Run terraform apply again or associate manually.", sc))
+			resp.Diagnostics.AddError("Elastic IP associate failed",
+				fmt.Sprintf("O IP %s foi alocado mas a associacao devolveu %d. "+
+					"O IP existe e esta no estado; rode `terraform apply` de novo para "+
+					"repetir so a associacao.", plan.IPAddress.ValueString(), sc))
+			// Grava o estado antes de sair: o IP FOI alocado, e deixa-lo fora do
+			// estado criaria um orfao que o destroy nao alcanca.
+			resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+			return
 		}
 	}
 
