@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -30,7 +33,17 @@ type IamUserResourceModel struct {
 	Email       types.String `tfsdk:"email"`
 	Kind        types.String `tfsdk:"kind"`
 	Policies    types.List   `tfsdk:"policies"`
+	Policy      []PolicyBlock `tfsdk:"policy"`
 	Status      types.String `tfsdk:"status"`
+}
+
+// PolicyBlock e a politica INLINE com escopo — a unica forma que de fato
+// nomeia bucket. `policies` (nome de politica gerenciada) nao restringe nada
+// no gateway S3.
+type PolicyBlock struct {
+	Effect    types.String `tfsdk:"effect"`
+	Actions   types.List   `tfsdk:"actions"`
+	Resources types.List   `tfsdk:"resources"`
 }
 
 func NewIamUserResource() resource.Resource { return &IamUserResource{} }
@@ -75,6 +88,31 @@ func (r *IamUserResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"status": schema.StringAttribute{Computed: true},
 		},
+		Blocks: map[string]schema.Block{
+			"policy": schema.ListNestedBlock{
+				Description: "Politica inline COM ESCOPO: e a unica forma que limita a buckets " +
+					"especificos no gateway S3 (s3.cloud.kubmix.com). Pode repetir o bloco.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"effect": schema.StringAttribute{
+							Description: "\"allow\" ou \"deny\". Deny vence Allow, como na AWS.",
+							Required:    true,
+						},
+						"actions": schema.ListAttribute{
+							Description: "Ex.: [\"s3:GetObject\",\"s3:PutObject\",\"s3:ListBucket\"]. \"s3:*\" ou \"*\" liberam tudo.",
+							Required:    true,
+							ElementType: types.StringType,
+						},
+						"resources": schema.ListAttribute{
+							Description: "Nome do bucket, id, ou ARN. Para cobrir os objetos tambem, " +
+								"declare os DOIS: [\"meu-bucket\", \"meu-bucket/*\"].",
+							Required:    true,
+							ElementType: types.StringType,
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -88,6 +126,51 @@ func (r *IamUserResource) Configure(_ context.Context, req resource.ConfigureReq
 		return
 	}
 	r.client = client
+}
+
+// politicasDoPlano junta `policies` (nomes) e os blocos `policy` (inline) numa
+// lista so, que e o formato que a API guarda.
+//
+// REGRA DO TUDO-OU-NADA: o gateway S3 so cobra o escopo quando TODAS as
+// entradas sao inline. Se sobrar um nome de politica gerenciada na lista, ele
+// ignora o escopo e libera a organizacao inteira — silenciosamente. Entao
+// misturar os dois e recusado aqui, com erro, em vez de gerar uma credencial
+// que o cliente acredita estar limitada e nao esta.
+func politicasDoPlano(ctx context.Context, m IamUserResourceModel, diags *diag.Diagnostics) []interface{} {
+	nomes := policiesDoPlano(ctx, m.Policies)
+	if len(nomes) > 0 && len(m.Policy) > 0 {
+		diags.AddError(
+			"Nao misture `policies` com blocos `policy`",
+			"O gateway S3 so aplica o escopo por bucket quando TODAS as politicas do usuario sao inline. "+
+				"Com um nome de politica gerenciada na lista (ex.: \"StorageFullAccess\") o escopo e ignorado "+
+				"e a credencial acaba com acesso a TODOS os buckets da organizacao. "+
+				"Use so blocos `policy`, ou so `policies`.",
+		)
+		return nil
+	}
+	out := []interface{}{}
+	for _, n := range nomes {
+		out = append(out, n)
+	}
+	for _, b := range m.Policy {
+		var acoes, recursos []types.String
+		b.Actions.ElementsAs(ctx, &acoes, false)
+		b.Resources.ElementsAs(ctx, &recursos, false)
+		as := []string{}
+		for _, a := range acoes {
+			as = append(as, a.ValueString())
+		}
+		rs := []string{}
+		for _, r := range recursos {
+			rs = append(rs, r.ValueString())
+		}
+		out = append(out, map[string]interface{}{
+			"effect":    strings.ToLower(b.Effect.ValueString()),
+			"actions":   as,
+			"resources": rs,
+		})
+	}
+	return out
 }
 
 func policiesDoPlano(ctx context.Context, l types.List) []string {
@@ -150,7 +233,7 @@ func (r *IamUserResource) Create(ctx context.Context, req resource.CreateRequest
 		"username":    plan.Username.ValueString(),
 		"displayName": plan.DisplayName.ValueString(),
 		"kind":        plan.Kind.ValueString(),
-		"policies":    policiesDoPlano(ctx, plan.Policies),
+		"policies":    politicasDoPlano(ctx, plan, &resp.Diagnostics),
 		// A API cria uma chave inicial por padrao e devolve o segredo UMA vez.
 		// Aqui isso seria um segredo que ninguem captura: quem quer credencial
 		// declara um kubmix_access_key, que guarda o segredo no state.
@@ -270,7 +353,7 @@ func (r *IamUserResource) Update(ctx context.Context, req resource.UpdateRequest
 	// kubmix_access_key; mandar o campo aqui apagaria chaves vivas.
 	body := map[string]interface{}{
 		"displayName": plan.DisplayName.ValueString(),
-		"policies":    policiesDoPlano(ctx, plan.Policies),
+		"policies":    politicasDoPlano(ctx, plan, &resp.Diagnostics),
 	}
 	if !plan.Email.IsNull() && plan.Email.ValueString() != "" {
 		body["email"] = plan.Email.ValueString()
